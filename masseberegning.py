@@ -2,6 +2,7 @@ import arcpy
 import math
 import glob
 import os
+import stat
 import shutil
 from collections import deque
 import numpy as np
@@ -10,10 +11,12 @@ from datetime import datetime
 ###############################################################################################################
 ### SETUP
 ###############################################################################################################
-if os.path.exists("temp/scratch"):
+if os.path.exists("temp/scratch"): #deleting results from previous runs
+    os.chmod("temp/scratch", stat.S_IWRITE)
     shutil.rmtree("temp/scratch")
 
 if os.path.exists("temp/scratch.gdb"):
+    os.chmod("temp/scratch.gdb", stat.S_IWRITE)
     shutil.rmtree("temp/scratch.gdb")
     
 run_time = datetime.now().strftime("%Y_%m_%d_%H_%M")
@@ -74,10 +77,10 @@ def merge_and_rasterize_multipatches(multipatches:list[arcpy.Result], cell_size=
                 multipatch_fts.append(child.catalogPath)
 
     merged_mps = arcpy.management.Merge(multipatch_fts, "memory/merged_mps")
-
+    outpath = os.path.join(scratch_folder, "MERGED_MODEL_RASTER.tif")
     
     return arcpy.conversion.MultipatchToRaster(merged_mps, 
-                                   "MERGED_MODEL_RASTER",
+                                   outpath,
                                    cell_size,
                                    "MINIMUM_HEIGHT")
 
@@ -98,7 +101,8 @@ def tins_to_merged_raster(tin_folder_path:str, cell_size=0.1) -> list:
     method = "LINEAR"
     for tin in tin_list:
         tin_name = os.path.basename(tin)
-        raster_out = arcpy.ddd.TinRaster(tin, tin_name, data_type,
+        raster_out_path = os.path.join(tin_folder_path, f"{tin_name}.tif" )
+        raster_out = arcpy.ddd.TinRaster(tin, raster_out_path, data_type,
                                             method,
                                             sampling,
                                             z_factor,
@@ -107,7 +111,7 @@ def tins_to_merged_raster(tin_folder_path:str, cell_size=0.1) -> list:
         rasters.append(arcpy.Raster(raster_out))
 
     merged_raster = arcpy.ia.Merge(rasters, "MIN")
-    merged_raster.save(f"{os.path.basename(tin_folder_path)}_merged_raster")
+    merged_raster.save(f"{os.path.basename(tin_folder_path)}_MERGED_RASTER.tif")
     return merged_raster.catalogPath
 
 #############################################################################################################
@@ -319,16 +323,35 @@ def merge_berg_with_existing_models(berg_excavation_raster, model_raster, cell_s
     print("Merge complete.")
     return output.catalogPath
 
+#################################################################################################################################
+### PROCESSSING STEPS - IFC, LANDXML INPUT to RASTER
+#################################################################################################################################
+
+ifc_list = list_files_by_ext(MODEL_FOLDER_PATH, "*.ifc")
+
+print("Importing as multipatch...")
+
+bim_mps = import_ifcs_as_multipatch(ifc_list)
+
+print("Merging multipatches and converting to raster...")
+
+full_model_raster = merge_and_rasterize_multipatches(bim_mps).getOutput(0)
+
+print("IFC to raster complete.")
+
+arcpy.env.snapRaster = full_model_raster #snapping all following raster processing to model raster grid
+
+print("Converting terrain layers to raster...")
+berg_tin = convert_landxml_to_tin(BERG_PATH, "berg")
+full_berg_raster = tins_to_merged_raster(berg_tin, CELL_SIZE)
+
+terrain_tin = convert_landxml_to_tin(TERRAIN_PATH, "terrain")
+full_terrain_raster = tins_to_merged_raster(terrain_tin, CELL_SIZE)
+print("Terrain layers successfully converted to raster.")
 
 #################################################################################################################################
-### PROCESSSING STEPS
+### PROCESSSING STEPS - RASTER
 #################################################################################################################################
-
-
-full_model_raster = r"C:\Users\scbm\OneDrive - COWI\Projects\A240636 - Bybanen\A240636 - Bybanen_RCI_TESTING\PME.gdb\MERGED_MODEL_RASTER"
-full_berg_raster = r"C:\Users\scbm\OneDrive - COWI\Projects\A240636 - Bybanen\A240636 - Bybanen_RCI_TESTING\PME.gdb\berg"
-aoi = r"C:\Users\scbm\OneDrive - COWI\Projects\A240636 - Bybanen\A240636 - Bybanen_RCI_TESTING\PME.gdb\test_aoi"
-arcpy.env.snapRaster = full_model_raster
 
 
 grid_extents = []
