@@ -171,7 +171,7 @@ def filter_model_under_berg(model_raster, berg_raster, cell_size, out_name) -> s
     out_raster.save(out_path)
     return out_raster.catalogPath
 
-def generate_berg_excavation(filtered_berg_model_raster, berg_raster, cell_size):
+def generate_berg_excavation(filtered_berg_model_raster, berg_raster, cell_size, out_name) -> str:
     filtered_berg = arcpy.Raster(filtered_berg_model_raster)
     berg = arcpy.Raster(berg_raster)
 
@@ -230,8 +230,8 @@ def generate_berg_excavation(filtered_berg_model_raster, berg_raster, cell_size)
 
     lower_left = arcpy.Point(filtered_berg.extent.XMin, filtered_berg.extent.YMin)
     output = arcpy.NumPyArrayToRaster(output_raster, lower_left, cell_size, cell_size, value_to_nodata=np.nan) 
-
-    output.save("berg_excavation_raster")
+    out_path = os.path.join(scratch_folder, out_name)
+    output.save(out_path)
     print("Berg excavation processing complete") 
     return output.catalogPath
 
@@ -357,6 +357,12 @@ print("Terrain layers successfully converted to raster.")
 grid_extents = []
 clipped_model_tiles = []
 clipped_berg_tiles = []
+clipped_filtered_tiles = []
+clipped_berg_exc_tiles = []
+clipped_buffered_tiles = []
+model_berg_exc_tiles = []
+
+
 
 with arcpy.da.SearchCursor(GRID_PATH, ["GRIDNR", "SHAPE@"]) as cursor:
     for row in cursor:
@@ -367,6 +373,8 @@ with arcpy.da.SearchCursor(GRID_PATH, ["GRIDNR", "SHAPE@"]) as cursor:
         ymax = str(ext.YMax)
         bbox = " ".join([xmin, ymin, xmax, ymax])
         grid_extents.append((row[0],bbox))
+
+#Clipping input rasters 
 
 for cell in grid_extents:
     bbox = cell[1]
@@ -393,22 +401,47 @@ for cell in grid_extents:
         maintain_clipping_extent="NO_MAINTAIN_EXTENT"
     )
 
+# Filtering model under berg 
 
-filter_merge = []
 for model, berg in zip(clipped_model_tiles, clipped_berg_tiles):
     suffix = os.path.basename(model).split("_")[-1] #tile nr
     print(f"Filtering tile {suffix}")
     filtered_tile = filter_model_under_berg(model, berg, 0.1, f"filtered_tile_{suffix}.tif")
-    filter_merge.append(filtered_tile)
+    clipped_filtered_tiles.append(filtered_tile)
 
-print("Merging results...")
-complete_filter = arcpy.ia.Merge(filter_merge, "MIN")
-filter_out = os.path.join(scratch_gdb, "model_under_berg")
-complete_filter.save(filter_out)
+#Might not need this? Clip -> merge -> clip seems wrong. 
+
+# print("Merging results...")
+# complete_filter = arcpy.ia.Merge(filter_merge, "MIN")
+# filter_out = os.path.join(scratch_gdb, "model_under_berg")
+# complete_filter.save(filter_out)
+# print("Merge complete.")
+
+# Clipping filtered model tiles and berg excavation
+
+print("Generating berg excavation")
+for model, berg in zip(clipped_filtered_tiles, clipped_berg_tiles):
+    suffix = os.path.basename(model).split("_")[-1] #tile nr
+    print(f"Generating berg excavation for tile {suffix}")
+    berg_exc_tile = generate_berg_excavation(model, berg, CELL_SIZE, f"berg_exc_tile_{suffix}.tif" )
+    clipped_berg_exc_tiles.append(berg_exc_tile)
+
+print("Merging intermediate results...")
+complete_berg_exc = arcpy.ia.Merge(clipped_berg_tiles, "MIN")
+berg_exc_out = os.path.join(scratch_folder, "berg_exc_complete.tif")
+complete_berg_exc.save(berg_exc_out)
+complete_berg_exc_path = complete_berg_exc.catalogPath
 print("Merge complete.")
 
+print("Buffering result...")
+berg_exc_buffered = arcpy.sa.DistanceAccumulation(in_source_data=complete_berg_exc_path, source_maximum_accumulation=1.0) #1 meter buffer
+#TODO COMPLETE CLIPPING AND TEST FULL RUN
+#TODO FIX CLEANUP ROUTINE
+
+
+
 print("cleaning up")
-for f in clipped_berg_tiles + clipped_model_tiles + filter_merge:
+for f in clipped_berg_tiles + clipped_model_tiles + clipped_filtered_tiles:
     f_xml = f + ".xml"
     if os.path.exists(f):
         os.remove(f)
