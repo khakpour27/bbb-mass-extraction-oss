@@ -133,7 +133,7 @@ def merge_buffer_with_berg(berg_flate, berg_excavation, berg_buffer, cell_size, 
 
     for r in range(rows):
         for c in range(cols):
-            if not np.isnan(np_berg_buff[r,c]) and np_berg_buff[r,c] > 0 and not np.isnan(np_berg_flate[r,c]):
+            if not np.isnan(np_berg_buff[r,c]) and 0 < np_berg_buff[r,c] <= 1 and not np.isnan(np_berg_flate[r,c]):
                 out_raster[r,c] = np_berg_flate[r,c]
 
             if not np.isnan(np_berg_exc[r,c]):
@@ -142,7 +142,7 @@ def merge_buffer_with_berg(berg_flate, berg_excavation, berg_buffer, cell_size, 
     lower_left = arcpy.Point(berg_excavation.extent.XMin, berg_excavation.extent.YMin)
     out_raster = arcpy.NumPyArrayToRaster(out_raster, lower_left, cell_size, cell_size, value_to_nodata=np.nan)
         
-    out_raster.save("Berg_Excavation_With_Final_Buffer")
+    out_raster.save(os.path.join(scratch_folder, out_name))
     return out_raster.catalogPath
 
 
@@ -235,13 +235,13 @@ def generate_berg_excavation(filtered_berg_model_raster, berg_raster, cell_size,
     print("Berg excavation processing complete") 
     return output.catalogPath
 
-def generate_final_excavation(berg_excavation_raster, merged_model_raster, terrain_raster, cell_size):
+def generate_final_excavation(berg_excavation_raster, merged_model_raster, terrain_raster, cell_size, outname):
     berg_exc = arcpy.Raster(berg_excavation_raster)
     model_merge = arcpy.Raster(merged_model_raster)
     terrain = arcpy.Raster(terrain_raster)
 
-    rows = model_merge.height
-    cols = model_merge.width
+    rows = min(model_merge.height, berg_exc.height, terrain.height)
+    cols = min(model_merge.width, berg_exc.width, terrain.width)
 
     np_berg = arcpy.RasterToNumPyArray(berg_exc, nodata_to_value=np.nan)
     #np_model = arcpy.RasterToNumPyArray(model_merge, nodata_to_value=np.nan)
@@ -291,16 +291,17 @@ def generate_final_excavation(berg_excavation_raster, merged_model_raster, terra
 
     lower_left = arcpy.Point(model_merge.extent.XMin, model_merge.extent.YMin)
     output = arcpy.NumPyArrayToRaster(out_models, lower_left, cell_size, cell_size, value_to_nodata=np.nan)
-    output.save("final_excavation_raster")
+    out_path = os.path.join(scratch_folder, outname)
+    output.save(out_path)
     print("Processing complete.")
     return output.catalogPath
     
-def merge_berg_with_existing_models(berg_excavation_raster, model_raster, cell_size):
+def merge_berg_with_existing_models(berg_excavation_raster, model_raster, cell_size, outname):
     berg_model = arcpy.Raster(berg_excavation_raster)
     models = arcpy.Raster(model_raster)
 
-    rows = models.height
-    cols = models.width
+    rows = min(models.height, berg_model.height)
+    cols = min(models.width, berg_model.width)
 
     np_berg_m = arcpy.RasterToNumPyArray(berg_model, nodata_to_value=np.nan)
     np_models = arcpy.RasterToNumPyArray(models, nodata_to_value=np.nan)
@@ -319,7 +320,8 @@ def merge_berg_with_existing_models(berg_excavation_raster, model_raster, cell_s
 
     lower_left = arcpy.Point(models.extent.XMin, models.extent.YMin)
     output = arcpy.NumPyArrayToRaster(out_models, lower_left, cell_size, cell_size, value_to_nodata=np.nan)
-    output.save("merged_models_with_berg_exc")
+    out_name = os.path.join(scratch_folder, outname)
+    output.save(out_name)
     print("Merge complete.")
     return output.catalogPath
 
@@ -360,7 +362,11 @@ clipped_berg_tiles = []
 clipped_filtered_tiles = []
 clipped_berg_exc_tiles = []
 clipped_buffered_tiles = []
+clipped_buff_berg_tiles = []
 model_berg_exc_tiles = []
+final_model_tiles = []
+terrain_tiles = []
+final_exc_tiles = []
 
 
 
@@ -404,9 +410,9 @@ for cell in grid_extents:
 # Filtering model under berg 
 
 for model, berg in zip(clipped_model_tiles, clipped_berg_tiles):
-    suffix = os.path.basename(model).split("_")[-1] #tile nr
+    suffix = os.path.basename(model).split("_")[-1] #tile nr.tif
     print(f"Filtering tile {suffix}")
-    filtered_tile = filter_model_under_berg(model, berg, 0.1, f"filtered_tile_{suffix}.tif")
+    filtered_tile = filter_model_under_berg(model, berg, 0.1, f"filtered_tile_{suffix}")
     clipped_filtered_tiles.append(filtered_tile)
 
 #Might not need this? Clip -> merge -> clip seems wrong. 
@@ -423,28 +429,83 @@ print("Generating berg excavation")
 for model, berg in zip(clipped_filtered_tiles, clipped_berg_tiles):
     suffix = os.path.basename(model).split("_")[-1] #tile nr
     print(f"Generating berg excavation for tile {suffix}")
-    berg_exc_tile = generate_berg_excavation(model, berg, CELL_SIZE, f"berg_exc_tile_{suffix}.tif" )
+    berg_exc_tile = generate_berg_excavation(model, berg, CELL_SIZE, f"berg_exc_tile_{suffix}" )
     clipped_berg_exc_tiles.append(berg_exc_tile)
 
 print("Merging intermediate results...")
-complete_berg_exc = arcpy.ia.Merge(clipped_berg_tiles, "MIN")
+complete_berg_exc = arcpy.ia.Merge(clipped_berg_exc_tiles, "MIN")
 berg_exc_out = os.path.join(scratch_folder, "berg_exc_complete.tif")
 complete_berg_exc.save(berg_exc_out)
 complete_berg_exc_path = complete_berg_exc.catalogPath
 print("Merge complete.")
 
 print("Buffering result...")
-berg_exc_buffered = arcpy.sa.DistanceAccumulation(in_source_data=complete_berg_exc_path, source_maximum_accumulation=1.0) #1 meter buffer
-#TODO COMPLETE CLIPPING AND TEST FULL RUN
+berg_exc_buffered = arcpy.gp.DistanceAccumulation_sa(complete_berg_exc_path, os.path.join(scratch_folder, "distance_raster.tif")).getOutput(0)
+
+print("Clipping buffered result")
+for cell in grid_extents:
+    bbox = cell[1]
+    id = cell[0]
+    out_path_buff = os.path.join(scratch_folder, f"buffer_clip_{id}.tif")
+    clipped_buffered_tiles.append(out_path_buff)
+
+    arcpy.management.Clip(
+        in_raster=berg_exc_buffered,
+        rectangle=bbox,
+        out_raster=out_path_buff,
+        nodata_value="3,4e+38",
+        maintain_clipping_extent="NO_MAINTAIN_EXTENT"
+    )
+
+print("Adding buffer to berg excavation results...")
+for berg, exc, buff in zip(clipped_berg_tiles, clipped_berg_exc_tiles, clipped_buffered_tiles):
+    suffix = os.path.basename(berg).split("_")[-1] #tile nr
+    print(f"Generating buffered berg excavation for tile {suffix}")
+    buff_exc_tile = merge_buffer_with_berg(berg, exc, buff, CELL_SIZE, f"buff_exc_tile_{suffix}" )
+    clipped_buff_berg_tiles.append(buff_exc_tile)
+
+print("Merging with existing model raster...")
+for berg_m, model in zip(clipped_buff_berg_tiles, clipped_model_tiles):
+    suffix = os.path.basename(berg_m).split("_")[-1]
+    final_model_tile = merge_berg_with_existing_models(berg_m, model, CELL_SIZE, f"final_model_tile_{suffix}")
+    final_model_tiles.append(final_model_tile)
+
+print("generating final excavation...")
+print("clipping terrain...")
+
+for cell in grid_extents:
+    bbox = cell[1]
+    id = cell[0]
+    out_path = os.path.join(scratch_folder, f"terrain_clip_{id}.tif")
+    terrain_tiles.append(out_path)
+
+    arcpy.management.Clip(
+        in_raster=arcpy.Raster(full_terrain_raster),
+        rectangle=bbox,
+        out_raster=out_path,
+        nodata_value="3,4e+38",
+        maintain_clipping_extent="NO_MAINTAIN_EXTENT"
+    )
+
+
+for berg, mod, terr in zip(clipped_buff_berg_tiles, final_model_tiles, terrain_tiles):
+    suffix = os.path.basename(mod).split("_")[-1]
+    final_tile = generate_final_excavation(berg, mod, terr, CELL_SIZE, f"final_tile_{suffix}")
+    final_model_tiles.append(final_tile)
+
+final_result = arcpy.ia.Merge(final_model_tiles, "MIN")
+final_result.save(os.path.join(output_folder, "final_result_raster.tif"))
+print("final result complete.")
+
 #TODO FIX CLEANUP ROUTINE
 
 
 
-print("cleaning up")
-for f in clipped_berg_tiles + clipped_model_tiles + clipped_filtered_tiles:
-    f_xml = f + ".xml"
-    if os.path.exists(f):
-        os.remove(f)
-    if os.path.exists(f_xml):
-        os.remove(f_xml)
+# print("cleaning up")
+# for f in clipped_berg_tiles + clipped_model_tiles + clipped_filtered_tiles:
+#     f_xml = f + ".xml"
+#     if os.path.exists(f):
+#         os.remove(f)
+#     if os.path.exists(f_xml):
+#         os.remove(f_xml)
 
