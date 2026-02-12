@@ -9,15 +9,15 @@ logging.basicConfig(
     level=logging.INFO
 )
 
-scripts = ['mass_calc_prod_pc.py', 'tunnel_vol.py', 'publish_agol.py']
+scripts = ['mass_calc.py', 'tunnel_vol.py', 'publish.py']
 
 for script in scripts:
     try:
         logging.info(f"Running {script}...")
-        subprocess.run([sys.executable, script], check=True)
+        subprocess.run([sys.executable, script], check=True, capture_output=True, text=True)
         logging.info(f"{script} finished successfully")
 
-    except Exception as e:
+    except subprocess.CalledProcessError as e:
         logging.error("Something went wrong. Aborted futher script runs.") 
-        logging.error(f"Details: {e}")
+        logging.error(f"Details: {e.stderr}")
         sys.exit()
