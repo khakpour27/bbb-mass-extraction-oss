@@ -374,7 +374,7 @@ if __name__ == "__main__":
     if os.path.exists('temp'):
         safe_delete('temp')
 
-    if len(os.listdir('output')) > 3:
+    if len(os.listdir('output')) > 1:
         cleanup_results('output')
 
     arcpy.CheckOutExtension("3D")
