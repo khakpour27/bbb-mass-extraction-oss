@@ -367,7 +367,9 @@ def cleanup_results(output_folder:str) -> None:
 ###############################################################################################################
 if __name__ == "__main__":
 
-
+    if not os.path.exists('output'):
+        os.mkdir('output')
+        
     if os.path.exists("scratch"):
         safe_delete("scratch")
 
