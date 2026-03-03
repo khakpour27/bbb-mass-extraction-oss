@@ -1,0 +1,45 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Virtual environments
+venv/
+.venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Project scratch/output
+scratch/
+temp/
+output/
+
+# Raster files (large, generated)
+*.tif
+*.tfw
+!SCRIPT_HELP_FILES/munkebotn_mask.tif
+
+# GDB (Esri geodatabase)
+*.gdb/
+
+# OS
+Thumbs.db
+.DS_Store
+
+# Logs
+*.log
+
+# Runtime config overrides (user-specific)
+config_overrides.json
+
+# Claude local settings
+.claude/

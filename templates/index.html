@@ -1,0 +1,777 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>BBB Mass Extraction</title>
+<style>
+  :root {
+    --bg: #f5f6f8;
+    --card: #ffffff;
+    --border: #dde1e6;
+    --primary: #2563eb;
+    --primary-hover: #1d4ed8;
+    --danger: #dc2626;
+    --danger-hover: #b91c1c;
+    --success: #16a34a;
+    --text: #1e293b;
+    --text-muted: #64748b;
+    --log-bg: #0f172a;
+    --log-text: #e2e8f0;
+    --log-error: #f87171;
+    --log-warn: #fbbf24;
+    --log-dim: #64748b;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.5;
+  }
+
+  header {
+    background: var(--card);
+    border-bottom: 1px solid var(--border);
+    padding: 12px 24px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+
+  header h1 { font-size: 18px; font-weight: 600; }
+
+  .header-right {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+
+  #elapsed-time {
+    font-size: 13px;
+    font-family: "SF Mono", "Cascadia Code", "Consolas", monospace;
+    color: var(--text-muted);
+  }
+
+  .status-badge {
+    padding: 4px 12px;
+    border-radius: 12px;
+    font-size: 13px;
+    font-weight: 500;
+  }
+
+  .status-idle { background: #e2e8f0; color: #475569; }
+  .status-running { background: #dbeafe; color: #1d4ed8; }
+  .status-done { background: #dcfce7; color: #166534; }
+  .status-error { background: #fee2e2; color: #991b1b; }
+
+  @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.4; } }
+  .status-running { animation: pulse 1.5s ease-in-out infinite; }
+
+  .heartbeat {
+    display: inline-block;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: #94a3b8;
+    margin-right: 4px;
+    vertical-align: middle;
+  }
+
+  .heartbeat.alive { background: var(--success); animation: pulse 1s infinite; }
+  .heartbeat.dead { background: var(--danger); }
+
+  .layout {
+    display: grid;
+    grid-template-columns: 380px 1fr;
+    gap: 16px;
+    padding: 16px 24px;
+    max-width: 1400px;
+    margin: 0 auto;
+    height: calc(100vh - 56px);
+  }
+
+  .card {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 16px;
+  }
+
+  /* ── Left column: Config ── */
+  .left-col {
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+
+  .config-group h3 {
+    font-size: 13px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--text-muted);
+    margin-bottom: 8px;
+    padding-bottom: 4px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .config-field {
+    display: flex;
+    flex-direction: column;
+    margin-bottom: 8px;
+  }
+
+  .config-field label {
+    font-size: 12px;
+    font-weight: 500;
+    color: var(--text-muted);
+    margin-bottom: 2px;
+  }
+
+  .config-field input {
+    padding: 6px 8px;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    font-size: 13px;
+    font-family: "SF Mono", "Cascadia Code", "Consolas", monospace;
+    width: 100%;
+  }
+
+  .config-field input:focus {
+    outline: none;
+    border-color: var(--primary);
+    box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.15);
+  }
+
+  .config-field input.modified {
+    border-color: var(--primary);
+    background: #eff6ff;
+  }
+
+  .config-actions {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+
+  /* ── Right column ── */
+  .right-col {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    min-height: 0;
+  }
+
+  .controls {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+  }
+
+  button {
+    padding: 8px 16px;
+    border: none;
+    border-radius: 6px;
+    font-size: 13px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: background 0.15s;
+  }
+
+  .btn-primary { background: var(--primary); color: white; }
+  .btn-primary:hover { background: var(--primary-hover); }
+  .btn-primary:disabled { background: #93c5fd; cursor: not-allowed; }
+
+  .btn-danger { background: var(--danger); color: white; }
+  .btn-danger:hover { background: var(--danger-hover); }
+  .btn-danger:disabled { background: #fca5a5; cursor: not-allowed; }
+
+  .btn-secondary { background: #e2e8f0; color: var(--text); }
+  .btn-secondary:hover { background: #cbd5e1; }
+
+  .btn-sm { padding: 4px 10px; font-size: 12px; }
+
+  /* ── Progress ── */
+  .progress-section { display: flex; flex-direction: column; gap: 6px; }
+
+  .progress-bar-outer {
+    height: 22px;
+    background: #e2e8f0;
+    border-radius: 11px;
+    overflow: hidden;
+    position: relative;
+  }
+
+  .progress-bar-inner {
+    height: 100%;
+    background: linear-gradient(90deg, #3b82f6, #2563eb);
+    border-radius: 11px;
+    transition: width 0.4s ease;
+    width: 0%;
+    position: relative;
+  }
+
+  .progress-bar-inner.complete {
+    background: linear-gradient(90deg, #22c55e, #16a34a);
+  }
+
+  .progress-bar-inner.has-error {
+    background: linear-gradient(90deg, #f87171, #dc2626);
+  }
+
+  .progress-label {
+    font-size: 13px;
+    color: var(--text-muted);
+    display: flex;
+    justify-content: space-between;
+  }
+
+  .progress-step-text {
+    font-weight: 500;
+    color: var(--text);
+  }
+
+  /* ── Log viewer ── */
+  .log-viewer {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+  }
+
+  .log-header {
+    font-size: 13px;
+    font-weight: 600;
+    margin-bottom: 8px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+  }
+
+  .log-header-left {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .log-count {
+    font-size: 11px;
+    font-weight: 400;
+    color: var(--text-muted);
+  }
+
+  #log-output {
+    flex: 1;
+    background: var(--log-bg);
+    color: var(--log-text);
+    font-family: "SF Mono", "Cascadia Code", "Consolas", monospace;
+    font-size: 12px;
+    line-height: 1.7;
+    padding: 12px;
+    border-radius: 6px;
+    overflow-y: auto;
+    white-space: pre-wrap;
+    word-break: break-word;
+    min-height: 200px;
+  }
+
+  #log-output .log-error { color: var(--log-error); font-weight: 500; }
+  #log-output .log-warning { color: var(--log-warn); }
+  #log-output .log-dim { color: var(--log-dim); }
+  #log-output .log-file { color: #67e8f9; }
+  #log-output .log-metric { color: #a5f3fc; }
+  #log-output .log-success { color: #4ade80; }
+  #log-output .log-line {
+    padding: 1px 0;
+    border-bottom: 1px solid rgba(255,255,255,0.03);
+  }
+
+  /* ── Past runs ── */
+  .past-runs {
+    max-height: 200px;
+    overflow-y: auto;
+  }
+
+  .past-runs h3 {
+    font-size: 13px;
+    font-weight: 600;
+    margin-bottom: 8px;
+  }
+
+  .run-entry {
+    padding: 8px 0;
+    border-bottom: 1px solid var(--border);
+    font-size: 13px;
+  }
+
+  .run-entry:last-child { border-bottom: none; }
+
+  .run-entry .run-name { font-weight: 500; margin-bottom: 4px; }
+
+  .run-entry .run-files {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+
+  .run-entry .run-files a {
+    color: var(--primary);
+    text-decoration: none;
+    font-size: 12px;
+  }
+
+  .run-entry .run-files a:hover { text-decoration: underline; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>BBB Mass Extraction Pipeline</h1>
+  <div class="header-right">
+    <span id="elapsed-time"></span>
+    <span class="heartbeat" id="heartbeat"></span>
+    <span id="status-badge" class="status-badge status-idle">Idle</span>
+  </div>
+</header>
+
+<div class="layout">
+  <!-- Left column: Configuration -->
+  <div class="left-col">
+    <div class="card">
+      <div class="config-actions">
+        <button class="btn-primary btn-sm" onclick="saveConfig()">Save Config</button>
+        <button class="btn-secondary btn-sm" onclick="applyPreset('test')">Test Preset</button>
+        <button class="btn-secondary btn-sm" onclick="applyPreset('prod')">Prod Preset</button>
+        <button class="btn-secondary btn-sm" onclick="resetConfig()">Reset Defaults</button>
+      </div>
+    </div>
+
+    <div id="config-form" class="card">
+      <p style="color: var(--text-muted); font-size: 13px;">Loading config...</p>
+    </div>
+  </div>
+
+  <!-- Right column: Controls + Logs + Results -->
+  <div class="right-col">
+    <div class="card">
+      <div class="controls">
+        <button id="btn-run" class="btn-primary" onclick="startRun()">Run Pipeline</button>
+        <button id="btn-stop" class="btn-danger" onclick="stopRun()" disabled>Stop</button>
+      </div>
+    </div>
+
+    <div class="card progress-section">
+      <div class="progress-label">
+        <span id="progress-step" class="progress-step-text">Ready</span>
+        <span id="progress-pct">0%</span>
+      </div>
+      <div class="progress-bar-outer">
+        <div id="progress-bar" class="progress-bar-inner"></div>
+      </div>
+    </div>
+
+    <div class="card log-viewer">
+      <div class="log-header">
+        <div class="log-header-left">
+          Live Logs
+          <span id="log-count" class="log-count"></span>
+        </div>
+        <button class="btn-secondary btn-sm" onclick="clearLogs()">Clear</button>
+      </div>
+      <div id="log-output"></div>
+    </div>
+
+    <div class="card past-runs">
+      <h3>Past Runs</h3>
+      <div id="past-runs-list">
+        <p style="color: var(--text-muted); font-size: 13px;">Loading...</p>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+  // ── State ──
+  let configDefaults = {};
+  let configValues = {};
+  let configGroups = {};
+  let configTypes = {};
+  let evtSource = null;
+  let autoScroll = true;
+  let pipelineStartedAt = null;
+  let elapsedTimer = null;
+  let logLineCount = 0;
+  let lastLogTime = null;
+
+  // ── Config ──
+
+  async function loadConfig() {
+    const res = await fetch("/api/config");
+    const data = await res.json();
+    configValues = data.values;
+    configDefaults = { ...data.values };
+    configGroups = data.groups;
+    configTypes = data.types;
+    renderConfigForm();
+  }
+
+  function renderConfigForm() {
+    const container = document.getElementById("config-form");
+    let html = "";
+    for (const [group, keys] of Object.entries(configGroups)) {
+      html += `<div class="config-group"><h3>${group}</h3>`;
+      for (const key of keys) {
+        const val = configValues[key] ?? "";
+        const type = configTypes[key] === "number" || configTypes[key] === "integer"
+          ? "number" : "text";
+        const step = configTypes[key] === "number" ? "any" : "";
+        html += `
+          <div class="config-field">
+            <label for="cfg-${key}">${key}</label>
+            <input id="cfg-${key}" type="${type}" ${step ? 'step="' + step + '"' : ""}
+                   value="${escHtml(String(val))}"
+                   data-key="${key}"
+                   data-default="${escHtml(String(val))}"
+                   oninput="markModified(this)">
+          </div>`;
+      }
+      html += "</div>";
+    }
+    container.innerHTML = html;
+  }
+
+  function markModified(input) {
+    const def = input.dataset.default;
+    if (input.value !== def) {
+      input.classList.add("modified");
+    } else {
+      input.classList.remove("modified");
+    }
+  }
+
+  async function saveConfig() {
+    const values = {};
+    document.querySelectorAll("#config-form input[data-key]").forEach(input => {
+      values[input.dataset.key] = input.value;
+    });
+    const res = await fetch("/api/config", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ values }),
+    });
+    const data = await res.json();
+    if (data.ok) {
+      configValues = data.config;
+      document.querySelectorAll("#config-form input[data-key]").forEach(input => {
+        input.dataset.default = String(configValues[input.dataset.key] ?? "");
+        input.value = input.dataset.default;
+        input.classList.remove("modified");
+      });
+      appendLog("INFO", "Config saved.");
+    }
+  }
+
+  async function applyPreset(name) {
+    const res = await fetch(`/api/config/preset/${name}`, { method: "POST" });
+    const data = await res.json();
+    if (data.ok) {
+      configValues = data.config;
+      renderConfigForm();
+      appendLog("INFO", `Applied "${name}" preset.`);
+    }
+  }
+
+  async function resetConfig() {
+    const res = await fetch("/api/config/reset", { method: "POST" });
+    const data = await res.json();
+    if (data.ok) {
+      configValues = data.config;
+      renderConfigForm();
+      appendLog("INFO", "Config reset to defaults.");
+    }
+  }
+
+  // ── Pipeline control ──
+
+  async function startRun() {
+    const res = await fetch("/api/run", { method: "POST" });
+    const data = await res.json();
+    if (res.ok) {
+      appendLog("INFO", "Pipeline started.");
+      setRunning(true);
+      startElapsedTimer();
+      connectSSE();
+    } else {
+      appendLog("ERROR", data.error || "Failed to start");
+    }
+  }
+
+  async function stopRun() {
+    const res = await fetch("/api/stop", { method: "POST" });
+    const data = await res.json();
+    if (res.ok) {
+      appendLog("WARNING", "Stop signal sent. Pipeline will halt after current step.");
+    } else {
+      appendLog("ERROR", data.error || "Failed to stop");
+    }
+  }
+
+  function setRunning(running) {
+    document.getElementById("btn-run").disabled = running;
+    document.getElementById("btn-stop").disabled = !running;
+  }
+
+  // ── Elapsed timer ──
+
+  function startElapsedTimer() {
+    pipelineStartedAt = Date.now();
+    if (elapsedTimer) clearInterval(elapsedTimer);
+    updateElapsed();
+    elapsedTimer = setInterval(updateElapsed, 1000);
+  }
+
+  function stopElapsedTimer() {
+    if (elapsedTimer) {
+      clearInterval(elapsedTimer);
+      elapsedTimer = null;
+    }
+  }
+
+  function updateElapsed() {
+    if (!pipelineStartedAt) return;
+    const dt = Math.floor((Date.now() - pipelineStartedAt) / 1000);
+    const m = Math.floor(dt / 60);
+    const s = dt % 60;
+    const str = m > 0 ? `${m}m ${s.toString().padStart(2, "0")}s` : `${s}s`;
+    document.getElementById("elapsed-time").textContent = str;
+  }
+
+  // ── SSE ──
+
+  function connectSSE() {
+    if (evtSource) evtSource.close();
+    evtSource = new EventSource("/api/logs");
+
+    evtSource.addEventListener("log", (e) => {
+      const data = JSON.parse(e.data);
+      appendLog(data.level, data.message);
+      lastLogTime = Date.now();
+      updateHeartbeat(true);
+    });
+
+    evtSource.addEventListener("progress", (e) => {
+      const data = JSON.parse(e.data);
+      updateProgress(data.step, data.pct);
+      lastLogTime = Date.now();
+      updateHeartbeat(true);
+    });
+
+    evtSource.addEventListener("status", (e) => {
+      const data = JSON.parse(e.data);
+      updateStatusBadge(data);
+
+      // Recover started_at from server if we connected mid-run
+      if (data.running && data.started_at && !pipelineStartedAt) {
+        pipelineStartedAt = data.started_at * 1000;
+        startElapsedTimer();
+      }
+
+      if (!data.running) {
+        setRunning(false);
+        stopElapsedTimer();
+        if (data.error) {
+          updateProgress("Error: " + data.error, data.progress_pct);
+          document.getElementById("progress-bar").classList.add("has-error");
+        }
+        updateHeartbeat(false);
+        loadResults();
+        setTimeout(() => {
+          if (evtSource) { evtSource.close(); evtSource = null; }
+        }, 2000);
+      }
+    });
+
+    evtSource.onerror = () => {
+      updateHeartbeat(false);
+      setTimeout(async () => {
+        try {
+          const res = await fetch("/api/status");
+          const status = await res.json();
+          if (status.running) {
+            connectSSE();
+          } else {
+            setRunning(false);
+            stopElapsedTimer();
+            if (evtSource) { evtSource.close(); evtSource = null; }
+          }
+        } catch (e) {
+          // Server unreachable
+        }
+      }, 2000);
+    };
+  }
+
+  // ── Heartbeat ──
+
+  function updateHeartbeat(alive) {
+    const hb = document.getElementById("heartbeat");
+    hb.classList.remove("alive", "dead");
+    if (alive) hb.classList.add("alive");
+  }
+
+  // Check if we haven't received data in a while
+  setInterval(() => {
+    const hb = document.getElementById("heartbeat");
+    if (lastLogTime && (Date.now() - lastLogTime > 10000)) {
+      // No data in 10s while running — show stale indicator
+      hb.classList.remove("alive");
+      hb.classList.add("dead");
+    }
+  }, 3000);
+
+  // ── Progress ──
+
+  function updateProgress(step, pct) {
+    const bar = document.getElementById("progress-bar");
+    const stepEl = document.getElementById("progress-step");
+    const pctEl = document.getElementById("progress-pct");
+
+    bar.style.width = pct + "%";
+    bar.classList.remove("complete", "has-error");
+    if (pct >= 100) bar.classList.add("complete");
+
+    stepEl.textContent = step;
+    pctEl.textContent = pct + "%";
+  }
+
+  function updateStatusBadge(status) {
+    const badge = document.getElementById("status-badge");
+    badge.classList.remove("status-idle", "status-running", "status-done", "status-error");
+    if (status.running) {
+      badge.textContent = "Running";
+      badge.classList.add("status-running");
+    } else if (status.error) {
+      badge.textContent = "Error";
+      badge.classList.add("status-error");
+    } else if (status.progress_pct >= 100) {
+      badge.textContent = "Complete";
+      badge.classList.add("status-done");
+    } else {
+      badge.textContent = "Idle";
+      badge.classList.add("status-idle");
+    }
+  }
+
+  // ── Log viewer ──
+
+  function appendLog(level, message) {
+    const el = document.getElementById("log-output");
+
+    // Handle multi-line messages (e.g. tracebacks)
+    const lines = message.split("\n");
+    for (const lineText of lines) {
+      if (!lineText.trim()) continue;
+
+      const line = document.createElement("div");
+      line.className = "log-line";
+      const ts = new Date().toLocaleTimeString("en-GB", { hour12: false });
+
+      // Determine style
+      let cls = "";
+      if (level === "ERROR") cls = "log-error";
+      else if (level === "WARNING") cls = "log-warning";
+      else if (lineText.includes("complete") || lineText.includes("Complete") || lineText.includes("done")) cls = "log-success";
+      else if (lineText.match(/\d+x\d+|m[²³]|pixels|cells|meshes|volume|\.tif|\.xlsx/i)) cls = "log-metric";
+      else if (lineText.match(/\.(ifc|xml|tif|gpkg)/i)) cls = "log-file";
+
+      if (cls) line.classList.add(cls);
+
+      // Format: dim timestamp, then message
+      line.innerHTML = `<span class="log-dim">${ts}</span> ${escHtml(lineText)}`;
+      el.appendChild(line);
+      logLineCount++;
+    }
+
+    document.getElementById("log-count").textContent = `${logLineCount} lines`;
+
+    if (autoScroll) {
+      el.scrollTop = el.scrollHeight;
+    }
+  }
+
+  function clearLogs() {
+    document.getElementById("log-output").innerHTML = "";
+    logLineCount = 0;
+    document.getElementById("log-count").textContent = "";
+  }
+
+  // Track auto-scroll
+  document.addEventListener("DOMContentLoaded", () => {
+    const logEl = document.getElementById("log-output");
+    logEl.addEventListener("scroll", () => {
+      autoScroll = logEl.scrollTop + logEl.clientHeight >= logEl.scrollHeight - 30;
+    });
+  });
+
+  // ── Past runs ──
+
+  async function loadResults() {
+    const res = await fetch("/api/results");
+    const data = await res.json();
+    const container = document.getElementById("past-runs-list");
+
+    if (!data.results || data.results.length === 0) {
+      container.innerHTML = '<p style="color: var(--text-muted); font-size: 13px;">No past runs found.</p>';
+      return;
+    }
+
+    let html = "";
+    for (const run of data.results) {
+      html += `<div class="run-entry">
+        <div class="run-name">${escHtml(run.name)}</div>
+        <div class="run-files">`;
+      for (const file of run.files) {
+        html += `<a href="/api/results/${encodeURIComponent(run.name)}/${encodeURIComponent(file)}"
+                    target="_blank">${escHtml(file)}</a>`;
+      }
+      html += `</div></div>`;
+    }
+    container.innerHTML = html;
+  }
+
+  // ── Utilities ──
+
+  function escHtml(str) {
+    const d = document.createElement("div");
+    d.textContent = str;
+    return d.innerHTML;
+  }
+
+  // ── Init ──
+
+  async function init() {
+    await loadConfig();
+    await loadResults();
+
+    const res = await fetch("/api/status");
+    const status = await res.json();
+    if (status.running) {
+      setRunning(true);
+      updateProgress(status.step, status.progress_pct);
+      updateStatusBadge(status);
+      if (status.started_at) {
+        pipelineStartedAt = status.started_at * 1000;
+        startElapsedTimer();
+      }
+      connectSSE();
+    }
+  }
+
+  init();
+</script>
+</body>
+</html>
