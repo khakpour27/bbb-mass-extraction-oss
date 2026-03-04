@@ -2,3 +2,6 @@ temp/
 scratch/
 scratch.gdb/
 testing.ipynb
+ifc_cache/
+output/
+run_history.log
