@@ -1,0 +1,94 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<RasterFunctionTemplate xsi:type="typens:RasterFunctionTemplate" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:typens="http://www.esri.com/schemas/ArcGIS/3.6.0">
+  <Name>Expand</Name>
+  <Description>Expands specified zones of a raster by a specified number of cells.</Description>
+  <Function xsi:type="typens:GPAdapterFunction" id="ID1">
+    <Name>Expand</Name>
+    <Description>Expands specified zones of a raster by a specified number of cells.</Description>
+    <PixelType>UNKNOWN</PixelType>
+  </Function>
+  <Arguments xsi:type="typens:GPAdapterFunctionArguments" id="ID2">
+    <Names xsi:type="typens:ArrayOfString" id="ID3">
+      <String>ToolName</String>
+      <String>PrimaryInputParameterName</String>
+      <String>OutputRasterParameterName</String>
+      <String>in_raster</String>
+      <String>number_cells</String>
+      <String>zone_values</String>
+      <String>expand_method</String>
+    </Names>
+    <Values xsi:type="typens:ArrayOfAnyType" id="ID4">
+      <AnyType xsi:type="typens:RasterFunctionVariable" id="ID5">
+        <Name>ToolName</Name>
+        <Description></Description>
+        <Value xsi:type="xs:string">Expand_sa</Value>
+        <IsDataset>false</IsDataset>
+      </AnyType>
+      <AnyType xsi:type="typens:RasterFunctionVariable" id="ID6">
+        <Name>PrimaryInputParameterName</Name>
+        <Description></Description>
+        <Value xsi:type="xs:string">in_raster</Value>
+        <IsDataset>false</IsDataset>
+      </AnyType>
+      <AnyType xsi:type="typens:RasterFunctionVariable" id="ID7">
+        <Name>OutputRasterParameterName</Name>
+        <Description></Description>
+        <Value xsi:type="xs:string">out_raster</Value>
+        <IsDataset>false</IsDataset>
+      </AnyType>
+      <AnyType xsi:type="typens:RasterFunctionVariable" id="ID8">
+        <Name>Raster</Name>
+        <Description></Description>
+        <Value></Value>
+        <IsDataset>true</IsDataset>
+      </AnyType>
+      <AnyType xsi:type="typens:RasterFunctionVariable" id="ID9">
+        <Name>number_cells</Name>
+        <Description></Description>
+        <Value xsi:type="xs:int">1</Value>
+        <IsDataset>false</IsDataset>
+      </AnyType>
+      <AnyType xsi:type="typens:RasterFunctionVariable" id="ID10">
+        <Name>zone_values</Name>
+        <Description></Description>
+        <Value xsi:type="typens:ArrayOfInt" id="ID11"></Value>
+        <IsDataset>false</IsDataset>
+      </AnyType>
+      <AnyType xsi:type="typens:RasterFunctionVariable" id="ID12">
+        <Name>expand_method</Name>
+        <Description></Description>
+        <Value xsi:type="xs:string">DISTANCE</Value>
+        <IsDataset>false</IsDataset>
+      </AnyType>
+    </Values>
+  </Arguments>
+  <Help></Help>
+  <Type>0</Type>
+  <Thumbnail xsi:type="xs:string"></Thumbnail>
+  <Definition></Definition>
+  <Group></Group>
+  <Tag></Tag>
+  <ThumbnailEx></ThumbnailEx>
+  <Properties xsi:type="typens:PropertySet" id="ID13">
+    <PropertyArray xsi:type="typens:ArrayOfPropertySetProperty" id="ID14">
+      <PropertySetProperty xsi:type="typens:PropertySetProperty" id="ID15">
+        <Key>MatchVariable</Key>
+        <Value xsi:type="typens:RasterFunctionVariable" id="ID16">
+          <Name>MatchVariable</Name>
+          <Description></Description>
+          <Value xsi:type="xs:int">1</Value>
+          <IsDataset>false</IsDataset>
+        </Value>
+      </PropertySetProperty>
+      <PropertySetProperty xsi:type="typens:PropertySetProperty" id="ID17">
+        <Key>UnionDimension</Key>
+        <Value xsi:type="typens:RasterFunctionVariable" id="ID18">
+          <Name>UnionDimension</Name>
+          <Description></Description>
+          <Value xsi:type="xs:int">0</Value>
+          <IsDataset>false</IsDataset>
+        </Value>
+      </PropertySetProperty>
+    </PropertyArray>
+  </Properties>
+</RasterFunctionTemplate>

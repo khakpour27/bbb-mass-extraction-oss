@@ -67,15 +67,25 @@ def get_intersecting_tiles(
 def clip_raster_to_bounds(
     raster_path: str,
     bounds: tuple[float, float, float, float],
-) -> tuple[np.ndarray, "rasterio.transform.Affine"]:
+) -> tuple[np.ndarray, "rasterio.transform.Affine"] | tuple[None, None]:
     """Clip a raster to a bounding box. Returns (array, transform).
 
     *bounds*: (xmin, ymin, xmax, ymax).
+    Returns (None, None) if bounds don't overlap with the raster at all.
     """
     with rasterio.open(raster_path) as src:
         window = from_bounds(*bounds, transform=src.transform)
-        # Clamp window to raster extent
-        window = window.intersection(rasterio.windows.Window(0, 0, src.width, src.height))
+        # Clamp window to raster extent — may be empty if no overlap
+        raster_window = rasterio.windows.Window(0, 0, src.width, src.height)
+        try:
+            window = window.intersection(raster_window)
+        except rasterio.errors.WindowError:
+            return None, None
+
+        # Also check for zero/negative dimensions after intersection
+        if window.width <= 0 or window.height <= 0:
+            return None, None
+
         data = src.read(1, window=window).astype(np.float32)
         transform = src.window_transform(window)
 
@@ -91,9 +101,11 @@ def clip_raster_to_file(
     bounds: tuple[float, float, float, float],
     output_path: str,
     crs: str,
-) -> str:
-    """Clip a raster and write to a GeoTIFF file. Returns output path."""
+) -> str | None:
+    """Clip a raster and write to a GeoTIFF file. Returns output path or None if no overlap."""
     data, transform = clip_raster_to_bounds(raster_path, bounds)
+    if data is None:
+        return None
     with rasterio.open(
         output_path, "w",
         driver="GTiff",

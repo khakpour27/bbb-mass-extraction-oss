@@ -4,16 +4,16 @@ import os
 
 # ── Input data paths ──────────────────────────────────────────────────────────
 MODEL_FOLDER_PATH = (
-    r"C:\ADC\ACCDocs\COWI ACC EU\A240636 - Bergen Bybane BT5 E03"
+    r"C:\Users\MHKK\DC\ACCDocs\COWI ACC EU\A240636 - Bergen Bybane BT5 E03"
     r"\Project Files\03_Shared (non-contractual)\Discipline models"
 )
 TERRAIN_PATH = (
-    r"C:\ADC\ACCDocs\COWI ACC EU\A240636 - Bergen Bybane BT5 E03"
+    r"C:\Users\MHKK\DC\ACCDocs\COWI ACC EU\A240636 - Bergen Bybane BT5 E03"
     r"\Project Files\03_Shared (non-contractual)"
     r"\Existing condition models (CORAV)\Terrengflater"
 )
 BERG_PATH = (
-    r"C:\ADC\ACCDocs\COWI ACC EU\A240636 - Bergen Bybane BT5 E03"
+    r"C:\Users\MHKK\DC\ACCDocs\COWI ACC EU\A240636 - Bergen Bybane BT5 E03"
     r"\Project Files\03_Shared (non-contractual)"
     r"\Existing condition models (CORAV)"
 )
@@ -43,7 +43,21 @@ GRID_PATH = os.path.join(SCRIPT_HELP_DIR, "grid_index.gpkg")
 MUNKEBOTN_MASK = os.path.join(SCRIPT_HELP_DIR, "munkebotn_mask.tif")
 
 # ── Multiprocessing ───────────────────────────────────────────────────────────
-MAX_CORES = 12
+MAX_CORES = 24               # Use all available threads (i9-12900: 16C/24T)
 
 # ── File limits (0 = no limit) ───────────────────────────────────────────────
 MAX_MODEL_FILES = 0          # Limit number of model IFC files processed
+
+# ── Test mode file selection ─────────────────────────────────────────────────
+TEST_AREA_PREFIX = ""        # e.g. "E03_011"; empty = auto-detect best section
+
+# ── Benchmark / legacy pipeline ──────────────────────────────────────────────
+LEGACY_PYTHON_PATH = (
+    r"C:\Program Files\ArcGIS\Pro\bin\Python\envs\arcgispro-py3\python.exe"
+)
+
+# ── Geographic extent validation (UTM32N Bergen bounds) ──────────────────────
+EXTENT_X_MIN = 200_000
+EXTENT_X_MAX = 400_000
+EXTENT_Y_MIN = 6_600_000
+EXTENT_Y_MAX = 6_800_000

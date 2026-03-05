@@ -1,8 +1,11 @@
 """FastAPI web UI for the BBB mass extraction pipeline.
 
+Supports OSS, Legacy, and Benchmark run modes with real-time progress
+via SSE, config management, benchmark comparison, and AGOL publishing.
+
 Usage:
     python web_ui.py
-    # Opens http://localhost:8501
+    # Opens http://localhost:8502
 """
 
 import asyncio
@@ -17,14 +20,16 @@ from fastapi.templating import Jinja2Templates
 from sse_starlette.sse import EventSourceResponse
 
 import config as _config_module
-from pipeline_worker import PipelineWorker
+from benchmark_worker import BenchmarkWorker
+from legacy_adapter import is_legacy_available
+from publish_adapter import is_publish_available
 
 # ── App setup ─────────────────────────────────────────────────────────────────
 
 app = FastAPI(title="BBB Mass Extraction")
 templates = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
 
-worker = PipelineWorker()
+worker = BenchmarkWorker()
 
 CONFIG_OVERRIDES_PATH = Path(__file__).parent / "config_overrides.json"
 OUTPUT_DIR = Path(__file__).parent / "output"
@@ -38,12 +43,16 @@ CONFIG_GROUPS = {
     "Processing": [
         "CELL_SIZE", "CRS", "GRID_CELL_SIZE", "SPORSYSTEM_Z_OFFSET",
         "MAX_TILE_DIMENSION", "MAX_CORES", "MAX_MODEL_FILES",
+        "TEST_AREA_PREFIX",
     ],
     "Slopes": [
         "ROCK_SLOPE_FACTOR", "SOIL_SLOPE_DIVISOR", "BUFFER_DISTANCE",
     ],
     "Density": [
         "ROCK_DENSITY", "SEDIMENT_DIESEL_FACTOR", "TUNNEL_ROCK_DENSITY",
+    ],
+    "Benchmark": [
+        "LEGACY_PYTHON_PATH",
     ],
 }
 
@@ -97,7 +106,7 @@ def _get_effective_config() -> dict:
     """Module defaults merged with user overrides."""
     cfg = {}
     for key in ALL_CONFIG_KEYS:
-        cfg[key] = getattr(_config_module, key)
+        cfg[key] = getattr(_config_module, key, "")
     overrides = _load_overrides()
     for key, val in overrides.items():
         if key in cfg:
@@ -141,7 +150,6 @@ async def set_config(request: Request):
     body = await request.json()
     values = body.get("values", {})
 
-    # Load existing overrides and merge
     overrides = _load_overrides()
     for key, raw in values.items():
         if key in ALL_CONFIG_KEYS:
@@ -157,7 +165,6 @@ async def apply_preset(name: str):
         return JSONResponse({"error": f"Unknown preset: {name}"}, status_code=400)
 
     if name == "prod":
-        # Reset to defaults by clearing overrides
         _save_overrides({})
     else:
         preset = PRESETS[name]
@@ -175,16 +182,35 @@ async def reset_config():
 
 
 @app.post("/api/run")
-async def start_run():
+async def start_run(request: Request):
     if worker.is_running:
         return JSONResponse({"error": "Pipeline is already running"}, status_code=409)
 
+    # Parse mode from request body
+    mode = "oss"
+    try:
+        body = await request.json()
+        mode = body.get("mode", "oss")
+    except Exception:
+        pass  # default to oss if no body
+
+    if mode not in ("oss", "legacy", "benchmark"):
+        return JSONResponse({"error": f"Invalid mode: {mode}"}, status_code=400)
+
+    # Check legacy availability for legacy/benchmark modes
     config = _get_effective_config()
-    started = worker.start(config=config)
+    if mode in ("legacy", "benchmark"):
+        if not is_legacy_available(config.get("LEGACY_PYTHON_PATH")):
+            return JSONResponse(
+                {"error": "ArcGIS Pro Python not available for legacy mode"},
+                status_code=400,
+            )
+
+    started = worker.start(config=config, mode=mode)
     if not started:
         return JSONResponse({"error": "Failed to start pipeline"}, status_code=500)
 
-    return {"ok": True, "message": "Pipeline started"}
+    return {"ok": True, "message": f"Pipeline started in {mode} mode", "mode": mode}
 
 
 @app.post("/api/stop")
@@ -199,6 +225,20 @@ async def stop_run():
 @app.get("/api/status")
 async def get_status():
     return worker.get_status()
+
+
+@app.get("/api/legacy/available")
+async def check_legacy():
+    """Check if ArcGIS Pro Python environment is available."""
+    config = _get_effective_config()
+    python_path = config.get("LEGACY_PYTHON_PATH", "")
+    available = is_legacy_available(python_path)
+    publish_ok = is_publish_available(python_path) if available else False
+    return {
+        "available": available,
+        "python_path": python_path,
+        "publish_available": publish_ok,
+    }
 
 
 @app.get("/api/logs")
@@ -242,16 +282,20 @@ async def stream_logs(request: Request):
 
 @app.get("/api/results")
 async def list_results():
-    """List completed output folders."""
+    """List completed output folders with benchmark/publish metadata."""
     results = []
     if OUTPUT_DIR.is_dir():
         for d in sorted(OUTPUT_DIR.iterdir(), reverse=True):
             if d.is_dir() and d.name.startswith("results_"):
                 files = [f.name for f in d.iterdir() if f.is_file()]
-                results.append({
+                entry = {
                     "name": d.name,
                     "files": files,
-                })
+                    "has_benchmark": "benchmark_results.json" in files,
+                    "has_oss": (d / "oss").is_dir(),
+                    "has_legacy": (d / "legacy").is_dir(),
+                }
+                results.append(entry)
     return {"results": results}
 
 
@@ -261,12 +305,63 @@ async def download_result(name: str, file: str):
     path = OUTPUT_DIR / name / file
     if not path.is_file():
         return JSONResponse({"error": "File not found"}, status_code=404)
-    # Prevent path traversal
     try:
         path.resolve().relative_to(OUTPUT_DIR.resolve())
     except ValueError:
         return JSONResponse({"error": "Invalid path"}, status_code=400)
     return FileResponse(path, filename=file)
+
+
+@app.get("/api/benchmark/{run_name}")
+async def get_benchmark_results(run_name: str):
+    """Return benchmark_results.json for a specific run."""
+    path = OUTPUT_DIR / run_name / "benchmark_results.json"
+    if not path.is_file():
+        return JSONResponse({"error": "Benchmark results not found"}, status_code=404)
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return data
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.get("/api/benchmark/{run_name}/diff_raster")
+async def download_diff_raster(run_name: str):
+    """Download the difference GeoTIFF for a benchmark run."""
+    path = OUTPUT_DIR / run_name / "diff_FINAL_RESULT.tif"
+    if not path.is_file():
+        return JSONResponse({"error": "Diff raster not found"}, status_code=404)
+    return FileResponse(path, filename="diff_FINAL_RESULT.tif")
+
+
+@app.post("/api/publish/{run_name}")
+async def publish_to_agol(run_name: str):
+    """Trigger AGOL publishing for a completed run's legacy output."""
+    config = _get_effective_config()
+    python_path = config.get("LEGACY_PYTHON_PATH", "")
+
+    if not is_legacy_available(python_path):
+        return JSONResponse(
+            {"error": "ArcGIS Pro Python not available"},
+            status_code=400,
+        )
+
+    run_dir = OUTPUT_DIR / run_name
+    # Check for legacy output
+    legacy_dir = run_dir / "legacy"
+    if legacy_dir.is_dir():
+        output_dir = str(legacy_dir)
+    elif run_dir.is_dir():
+        output_dir = str(run_dir)
+    else:
+        return JSONResponse({"error": "Run not found"}, status_code=404)
+
+    try:
+        from publish_adapter import run_publish
+        result = run_publish(config, output_dir)
+        return result
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
 
 
 # ── Lifecycle ─────────────────────────────────────────────────────────────────

@@ -100,7 +100,7 @@
     padding: 16px;
   }
 
-  /* ── Left column: Config ── */
+  /* -- Left column: Config -- */
   .left-col {
     overflow-y: auto;
     display: flex;
@@ -132,7 +132,7 @@
     margin-bottom: 2px;
   }
 
-  .config-field input {
+  .config-field input, .config-field select {
     padding: 6px 8px;
     border: 1px solid var(--border);
     border-radius: 4px;
@@ -141,7 +141,7 @@
     width: 100%;
   }
 
-  .config-field input:focus {
+  .config-field input:focus, .config-field select:focus {
     outline: none;
     border-color: var(--primary);
     box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.15);
@@ -158,7 +158,7 @@
     flex-wrap: wrap;
   }
 
-  /* ── Right column ── */
+  /* -- Right column -- */
   .right-col {
     display: flex;
     flex-direction: column;
@@ -171,6 +171,25 @@
     gap: 8px;
     align-items: center;
   }
+
+  .mode-select {
+    padding: 8px 12px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    font-size: 13px;
+    background: white;
+    cursor: pointer;
+  }
+
+  .legacy-badge {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 10px;
+    font-size: 11px;
+    font-weight: 600;
+  }
+  .legacy-badge.available { background: #dcfce7; color: #166534; }
+  .legacy-badge.unavailable { background: #fee2e2; color: #991b1b; }
 
   button {
     padding: 8px 16px;
@@ -195,7 +214,10 @@
 
   .btn-sm { padding: 4px 10px; font-size: 12px; }
 
-  /* ── Progress ── */
+  .btn-publish { background: #7c3aed; color: white; }
+  .btn-publish:hover { background: #6d28d9; }
+
+  /* -- Progress -- */
   .progress-section { display: flex; flex-direction: column; gap: 6px; }
 
   .progress-bar-outer {
@@ -223,6 +245,10 @@
     background: linear-gradient(90deg, #f87171, #dc2626);
   }
 
+  .progress-bar-inner.legacy {
+    background: linear-gradient(90deg, #a78bfa, #7c3aed);
+  }
+
   .progress-label {
     font-size: 13px;
     color: var(--text-muted);
@@ -235,7 +261,106 @@
     color: var(--text);
   }
 
-  /* ── Log viewer ── */
+  .dual-progress { display: none; flex-direction: column; gap: 8px; }
+  .dual-progress.active { display: flex; }
+
+  .progress-pipeline-label {
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    color: var(--text-muted);
+    margin-bottom: 2px;
+  }
+
+  /* -- Comparison panel -- */
+  .comparison-panel { display: none; }
+  .comparison-panel.active { display: block; }
+
+  .comparison-panel h3 {
+    font-size: 14px;
+    font-weight: 600;
+    margin-bottom: 12px;
+  }
+
+  .comp-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 12px;
+    font-family: "SF Mono", "Cascadia Code", "Consolas", monospace;
+  }
+
+  .comp-table th {
+    text-align: left;
+    padding: 6px 8px;
+    border-bottom: 2px solid var(--border);
+    font-size: 11px;
+    text-transform: uppercase;
+    color: var(--text-muted);
+  }
+
+  .comp-table td {
+    padding: 6px 8px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .comp-table .pct-green { color: #16a34a; }
+  .comp-table .pct-yellow { color: #d97706; }
+  .comp-table .pct-red { color: #dc2626; }
+
+  .time-bars {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    margin-bottom: 16px;
+  }
+
+  .time-bar-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 12px;
+  }
+
+  .time-bar-label { width: 80px; text-align: right; color: var(--text-muted); }
+
+  .time-bar-container {
+    flex: 1;
+    height: 18px;
+    background: #e2e8f0;
+    border-radius: 4px;
+    overflow: hidden;
+    position: relative;
+  }
+
+  .time-bar-fill {
+    height: 100%;
+    border-radius: 4px;
+    transition: width 0.3s;
+  }
+
+  .time-bar-fill.oss { background: #3b82f6; }
+  .time-bar-fill.legacy { background: #a78bfa; }
+
+  .time-bar-value { width: 60px; font-size: 11px; color: var(--text-muted); }
+
+  .raster-stats {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 8px;
+    margin-top: 12px;
+  }
+
+  .raster-stat {
+    text-align: center;
+    padding: 8px;
+    background: var(--bg);
+    border-radius: 6px;
+  }
+
+  .raster-stat .value { font-size: 18px; font-weight: 600; }
+  .raster-stat .label { font-size: 11px; color: var(--text-muted); }
+
+  /* -- Log viewer -- */
   .log-viewer {
     flex: 1;
     min-height: 0;
@@ -285,12 +410,13 @@
   #log-output .log-file { color: #67e8f9; }
   #log-output .log-metric { color: #a5f3fc; }
   #log-output .log-success { color: #4ade80; }
+  #log-output .log-legacy { color: #c4b5fd; }
   #log-output .log-line {
     padding: 1px 0;
     border-bottom: 1px solid rgba(255,255,255,0.03);
   }
 
-  /* ── Past runs ── */
+  /* -- Past runs -- */
   .past-runs {
     max-height: 200px;
     overflow-y: auto;
@@ -310,12 +436,13 @@
 
   .run-entry:last-child { border-bottom: none; }
 
-  .run-entry .run-name { font-weight: 500; margin-bottom: 4px; }
+  .run-entry .run-name { font-weight: 500; margin-bottom: 4px; display: flex; gap: 8px; align-items: center; }
 
   .run-entry .run-files {
     display: flex;
     flex-wrap: wrap;
     gap: 6px;
+    align-items: center;
   }
 
   .run-entry .run-files a {
@@ -325,6 +452,17 @@
   }
 
   .run-entry .run-files a:hover { text-decoration: underline; }
+
+  .badge-sm {
+    display: inline-block;
+    padding: 1px 6px;
+    border-radius: 8px;
+    font-size: 10px;
+    font-weight: 600;
+  }
+  .badge-benchmark { background: #ddd6fe; color: #5b21b6; }
+  .badge-oss { background: #dbeafe; color: #1d4ed8; }
+  .badge-legacy { background: #fce7f3; color: #9d174d; }
 </style>
 </head>
 <body>
@@ -334,6 +472,7 @@
   <div class="header-right">
     <span id="elapsed-time"></span>
     <span class="heartbeat" id="heartbeat"></span>
+    <span id="legacy-badge" class="legacy-badge unavailable">Legacy: checking...</span>
     <span id="status-badge" class="status-badge status-idle">Idle</span>
   </div>
 </header>
@@ -359,6 +498,11 @@
   <div class="right-col">
     <div class="card">
       <div class="controls">
+        <select id="mode-select" class="mode-select">
+          <option value="oss">OSS Only</option>
+          <option value="legacy">Legacy Only</option>
+          <option value="benchmark">Both (Benchmark)</option>
+        </select>
         <button id="btn-run" class="btn-primary" onclick="startRun()">Run Pipeline</button>
         <button id="btn-stop" class="btn-danger" onclick="stopRun()" disabled>Stop</button>
       </div>
@@ -372,6 +516,28 @@
       <div class="progress-bar-outer">
         <div id="progress-bar" class="progress-bar-inner"></div>
       </div>
+
+      <!-- Dual progress bars for benchmark mode -->
+      <div id="dual-progress" class="dual-progress">
+        <div>
+          <div class="progress-pipeline-label">OSS Pipeline</div>
+          <div class="progress-bar-outer">
+            <div id="progress-bar-oss" class="progress-bar-inner"></div>
+          </div>
+        </div>
+        <div>
+          <div class="progress-pipeline-label">Legacy Pipeline</div>
+          <div class="progress-bar-outer">
+            <div id="progress-bar-legacy" class="progress-bar-inner legacy"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Comparison panel (shown after benchmark) -->
+    <div id="comparison-panel" class="card comparison-panel">
+      <h3>Benchmark Comparison</h3>
+      <div id="comparison-content"></div>
     </div>
 
     <div class="card log-viewer">
@@ -395,7 +561,7 @@
 </div>
 
 <script>
-  // ── State ──
+  // -- State --
   let configDefaults = {};
   let configValues = {};
   let configGroups = {};
@@ -406,8 +572,11 @@
   let elapsedTimer = null;
   let logLineCount = 0;
   let lastLogTime = null;
+  let legacyAvailable = false;
+  let publishAvailable = false;
+  let currentMode = "oss";
 
-  // ── Config ──
+  // -- Config --
 
   async function loadConfig() {
     const res = await fetch("/api/config");
@@ -495,13 +664,60 @@
     }
   }
 
-  // ── Pipeline control ──
+  // -- Legacy availability --
+
+  async function checkLegacy() {
+    try {
+      const res = await fetch("/api/legacy/available");
+      const data = await res.json();
+      legacyAvailable = data.available;
+      publishAvailable = data.publish_available;
+      const badge = document.getElementById("legacy-badge");
+      if (legacyAvailable) {
+        badge.textContent = "Legacy: Available";
+        badge.className = "legacy-badge available";
+      } else {
+        badge.textContent = "Legacy: Not Found";
+        badge.className = "legacy-badge unavailable";
+      }
+      updateModeOptions();
+    } catch (e) {
+      // ignore
+    }
+  }
+
+  function updateModeOptions() {
+    const select = document.getElementById("mode-select");
+    for (const opt of select.options) {
+      if (opt.value === "legacy" || opt.value === "benchmark") {
+        opt.disabled = !legacyAvailable;
+        if (!legacyAvailable) {
+          opt.textContent = opt.value === "legacy"
+            ? "Legacy Only (unavailable)"
+            : "Both (Benchmark) (unavailable)";
+        }
+      }
+    }
+  }
+
+  // -- Pipeline control --
 
   async function startRun() {
-    const res = await fetch("/api/run", { method: "POST" });
+    const mode = document.getElementById("mode-select").value;
+    currentMode = mode;
+
+    // Show dual progress for benchmark
+    const dualProgress = document.getElementById("dual-progress");
+    dualProgress.classList.toggle("active", mode === "benchmark");
+
+    const res = await fetch("/api/run", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ mode }),
+    });
     const data = await res.json();
     if (res.ok) {
-      appendLog("INFO", "Pipeline started.");
+      appendLog("INFO", `Pipeline started in ${mode} mode.`);
       setRunning(true);
       startElapsedTimer();
       connectSSE();
@@ -523,9 +739,10 @@
   function setRunning(running) {
     document.getElementById("btn-run").disabled = running;
     document.getElementById("btn-stop").disabled = !running;
+    document.getElementById("mode-select").disabled = running;
   }
 
-  // ── Elapsed timer ──
+  // -- Elapsed timer --
 
   function startElapsedTimer() {
     pipelineStartedAt = Date.now();
@@ -550,7 +767,7 @@
     document.getElementById("elapsed-time").textContent = str;
   }
 
-  // ── SSE ──
+  // -- SSE --
 
   function connectSSE() {
     if (evtSource) evtSource.close();
@@ -574,7 +791,6 @@
       const data = JSON.parse(e.data);
       updateStatusBadge(data);
 
-      // Recover started_at from server if we connected mid-run
       if (data.running && data.started_at && !pipelineStartedAt) {
         pipelineStartedAt = data.started_at * 1000;
         startElapsedTimer();
@@ -589,6 +805,13 @@
         }
         updateHeartbeat(false);
         loadResults();
+
+        // Load benchmark comparison if applicable
+        if (data.output_folder && currentMode === "benchmark") {
+          const runName = data.output_folder.split(/[\/\\]/).pop();
+          loadBenchmarkComparison(runName);
+        }
+
         setTimeout(() => {
           if (evtSource) { evtSource.close(); evtSource = null; }
         }, 2000);
@@ -615,7 +838,7 @@
     };
   }
 
-  // ── Heartbeat ──
+  // -- Heartbeat --
 
   function updateHeartbeat(alive) {
     const hb = document.getElementById("heartbeat");
@@ -623,17 +846,15 @@
     if (alive) hb.classList.add("alive");
   }
 
-  // Check if we haven't received data in a while
   setInterval(() => {
     const hb = document.getElementById("heartbeat");
     if (lastLogTime && (Date.now() - lastLogTime > 10000)) {
-      // No data in 10s while running — show stale indicator
       hb.classList.remove("alive");
       hb.classList.add("dead");
     }
   }, 3000);
 
-  // ── Progress ──
+  // -- Progress --
 
   function updateProgress(step, pct) {
     const bar = document.getElementById("progress-bar");
@@ -646,13 +867,22 @@
 
     stepEl.textContent = step;
     pctEl.textContent = pct + "%";
+
+    // Update dual progress bars for benchmark mode
+    if (currentMode === "benchmark") {
+      if (step.includes("[OSS]")) {
+        document.getElementById("progress-bar-oss").style.width = (pct * 2) + "%";
+      } else if (step.includes("[LEGACY]")) {
+        document.getElementById("progress-bar-legacy").style.width = ((pct - 50) * 2) + "%";
+      }
+    }
   }
 
   function updateStatusBadge(status) {
     const badge = document.getElementById("status-badge");
     badge.classList.remove("status-idle", "status-running", "status-done", "status-error");
     if (status.running) {
-      badge.textContent = "Running";
+      badge.textContent = `Running (${status.mode || "oss"})`;
       badge.classList.add("status-running");
     } else if (status.error) {
       badge.textContent = "Error";
@@ -666,12 +896,92 @@
     }
   }
 
-  // ── Log viewer ──
+  // -- Benchmark comparison --
+
+  async function loadBenchmarkComparison(runName) {
+    try {
+      const res = await fetch(`/api/benchmark/${runName}`);
+      if (!res.ok) return;
+      const data = await res.json();
+      renderComparison(data, runName);
+    } catch (e) {
+      // ignore
+    }
+  }
+
+  function renderComparison(data, runName) {
+    const panel = document.getElementById("comparison-panel");
+    const content = document.getElementById("comparison-content");
+    panel.classList.add("active");
+
+    let html = "";
+
+    // Time comparison
+    const ossTime = data.oss?.total_time_s || 0;
+    const legacyTime = data.legacy?.total_time_s || 0;
+    const maxTime = Math.max(ossTime, legacyTime, 1);
+    const timeRatio = data.comparison?.time_ratio;
+
+    html += `<h4 style="margin-bottom:8px">Runtime${timeRatio ? ` (ratio: ${timeRatio.toFixed(2)}x)` : ""}</h4>`;
+    html += `<div class="time-bars">`;
+    html += `<div class="time-bar-row">
+      <div class="time-bar-label">OSS</div>
+      <div class="time-bar-container"><div class="time-bar-fill oss" style="width:${(ossTime/maxTime*100).toFixed(1)}%"></div></div>
+      <div class="time-bar-value">${formatTime(ossTime)}</div>
+    </div>`;
+    html += `<div class="time-bar-row">
+      <div class="time-bar-label">Legacy</div>
+      <div class="time-bar-container"><div class="time-bar-fill legacy" style="width:${(legacyTime/maxTime*100).toFixed(1)}%"></div></div>
+      <div class="time-bar-value">${formatTime(legacyTime)}</div>
+    </div>`;
+    html += `</div>`;
+
+    // Volume comparison table
+    const volDiffs = data.comparison?.volume_diffs;
+    if (volDiffs && Object.keys(volDiffs).length > 0) {
+      html += `<h4 style="margin:12px 0 8px">Volume Comparison</h4>`;
+      html += `<table class="comp-table">
+        <thead><tr><th>Metric</th><th>OSS</th><th>Legacy</th><th>Diff</th><th>% Diff</th></tr></thead><tbody>`;
+      for (const [key, v] of Object.entries(volDiffs)) {
+        const pctCls = v.pct_diff < 1 ? "pct-green" : v.pct_diff < 5 ? "pct-yellow" : "pct-red";
+        html += `<tr>
+          <td>${escHtml(key)}</td>
+          <td>${v.oss.toFixed(2)}</td>
+          <td>${v.legacy.toFixed(2)}</td>
+          <td>${v.diff.toFixed(2)}</td>
+          <td class="${pctCls}">${v.pct_diff.toFixed(2)}%</td>
+        </tr>`;
+      }
+      html += `</tbody></table>`;
+    }
+
+    // Raster diff stats
+    const rd = data.comparison?.raster_diff;
+    if (rd) {
+      html += `<h4 style="margin:12px 0 8px">Raster Precision</h4>`;
+      html += `<div class="raster-stats">
+        <div class="raster-stat"><div class="value">${rd.mean_abs_m.toFixed(3)}</div><div class="label">Mean Abs (m)</div></div>
+        <div class="raster-stat"><div class="value">${rd.pct_within_1cm.toFixed(1)}%</div><div class="label">Within 1cm</div></div>
+        <div class="raster-stat"><div class="value">${rd.pct_within_10cm.toFixed(1)}%</div><div class="label">Within 10cm</div></div>
+      </div>`;
+      html += `<div style="margin-top:8px"><a href="/api/benchmark/${encodeURIComponent(runName)}/diff_raster" class="btn-secondary btn-sm" style="text-decoration:none;display:inline-block">Download Diff Raster</a></div>`;
+    }
+
+    content.innerHTML = html;
+  }
+
+  function formatTime(seconds) {
+    if (seconds < 60) return seconds.toFixed(1) + "s";
+    const m = Math.floor(seconds / 60);
+    const s = Math.floor(seconds % 60);
+    return `${m}m ${s}s`;
+  }
+
+  // -- Log viewer --
 
   function appendLog(level, message) {
     const el = document.getElementById("log-output");
 
-    // Handle multi-line messages (e.g. tracebacks)
     const lines = message.split("\n");
     for (const lineText of lines) {
       if (!lineText.trim()) continue;
@@ -680,17 +990,16 @@
       line.className = "log-line";
       const ts = new Date().toLocaleTimeString("en-GB", { hour12: false });
 
-      // Determine style
       let cls = "";
       if (level === "ERROR") cls = "log-error";
       else if (level === "WARNING") cls = "log-warning";
+      else if (lineText.includes("[LEGACY]") || lineText.includes("[PUBLISH]")) cls = "log-legacy";
       else if (lineText.includes("complete") || lineText.includes("Complete") || lineText.includes("done")) cls = "log-success";
-      else if (lineText.match(/\d+x\d+|m[²³]|pixels|cells|meshes|volume|\.tif|\.xlsx/i)) cls = "log-metric";
+      else if (lineText.match(/\d+x\d+|m[^a-z]|pixels|cells|meshes|volume|\.tif|\.xlsx/i)) cls = "log-metric";
       else if (lineText.match(/\.(ifc|xml|tif|gpkg)/i)) cls = "log-file";
 
       if (cls) line.classList.add(cls);
 
-      // Format: dim timestamp, then message
       line.innerHTML = `<span class="log-dim">${ts}</span> ${escHtml(lineText)}`;
       el.appendChild(line);
       logLineCount++;
@@ -709,7 +1018,6 @@
     document.getElementById("log-count").textContent = "";
   }
 
-  // Track auto-scroll
   document.addEventListener("DOMContentLoaded", () => {
     const logEl = document.getElementById("log-output");
     logEl.addEventListener("scroll", () => {
@@ -717,7 +1025,7 @@
     });
   });
 
-  // ── Past runs ──
+  // -- Past runs --
 
   async function loadResults() {
     const res = await fetch("/api/results");
@@ -732,18 +1040,51 @@
     let html = "";
     for (const run of data.results) {
       html += `<div class="run-entry">
-        <div class="run-name">${escHtml(run.name)}</div>
-        <div class="run-files">`;
+        <div class="run-name">
+          ${escHtml(run.name)}`;
+
+      if (run.has_benchmark) html += ` <span class="badge-sm badge-benchmark">Benchmark</span>`;
+      if (run.has_oss) html += ` <span class="badge-sm badge-oss">OSS</span>`;
+      if (run.has_legacy) html += ` <span class="badge-sm badge-legacy">Legacy</span>`;
+
+      html += `</div><div class="run-files">`;
       for (const file of run.files) {
         html += `<a href="/api/results/${encodeURIComponent(run.name)}/${encodeURIComponent(file)}"
                     target="_blank">${escHtml(file)}</a>`;
       }
+
+      // Benchmark view button
+      if (run.has_benchmark) {
+        html += ` <button class="btn-secondary btn-sm" onclick="loadBenchmarkComparison('${escHtml(run.name)}')">View Comparison</button>`;
+      }
+
+      // Publish button (only when legacy available and run has legacy output)
+      if (publishAvailable && run.has_legacy) {
+        html += ` <button class="btn-publish btn-sm" onclick="publishRun('${escHtml(run.name)}')">Publish to AGOL</button>`;
+      }
+
       html += `</div></div>`;
     }
     container.innerHTML = html;
   }
 
-  // ── Utilities ──
+  async function publishRun(runName) {
+    if (!confirm(`Publish "${runName}" to AGOL?`)) return;
+    appendLog("INFO", `Publishing ${runName} to AGOL...`);
+    try {
+      const res = await fetch(`/api/publish/${encodeURIComponent(runName)}`, { method: "POST" });
+      const data = await res.json();
+      if (data.success) {
+        appendLog("INFO", `Published successfully in ${formatTime(data.total_time_s)}`);
+      } else {
+        appendLog("ERROR", `Publish failed: ${data.error || "Unknown error"}`);
+      }
+    } catch (e) {
+      appendLog("ERROR", `Publish error: ${e.message}`);
+    }
+  }
+
+  // -- Utilities --
 
   function escHtml(str) {
     const d = document.createElement("div");
@@ -751,15 +1092,17 @@
     return d.innerHTML;
   }
 
-  // ── Init ──
+  // -- Init --
 
   async function init() {
     await loadConfig();
     await loadResults();
+    await checkLegacy();
 
     const res = await fetch("/api/status");
     const status = await res.json();
     if (status.running) {
+      currentMode = status.mode || "oss";
       setRunning(true);
       updateProgress(status.step, status.progress_pct);
       updateStatusBadge(status);
@@ -767,6 +1110,8 @@
         pipelineStartedAt = status.started_at * 1000;
         startElapsedTimer();
       }
+      // Show dual progress for benchmark
+      document.getElementById("dual-progress").classList.toggle("active", currentMode === "benchmark");
       connectSSE();
     }
   }

@@ -1,6 +1,13 @@
-"""3D mesh to 2D raster via Open3D raycasting, plus GeoTIFF I/O helpers."""
+"""3D mesh to 2D raster via Open3D raycasting, plus GeoTIFF I/O helpers.
+
+Optimized for:
+- Tiled + compressed GeoTIFF output for faster NVMe I/O
+- GPU-accelerated raycasting when CUDA Open3D is available
+- Configurable GDAL cache for large rasters
+"""
 
 import logging
+import os
 
 import numpy as np
 import open3d as o3d
@@ -10,11 +17,25 @@ import trimesh
 
 logger = logging.getLogger(__name__)
 
+# Set GDAL cache to ~4 GB if not already configured (plenty of RAM on target machine)
+if "GDAL_CACHEMAX" not in os.environ:
+    os.environ["GDAL_CACHEMAX"] = "4096"
+
+# Check for CUDA availability
+_HAS_CUDA = False
+try:
+    if o3d.core.cuda.is_available():
+        _HAS_CUDA = True
+        logger.info("Open3D CUDA available — GPU raycasting enabled")
+except (AttributeError, RuntimeError):
+    pass
+
 
 def mesh_to_raster(
     mesh: trimesh.Trimesh,
     cell_size: float,
     method: str = "MINIMUM_HEIGHT",
+    use_gpu: bool = True,
 ) -> tuple[np.ndarray, "rasterio.transform.Affine"]:
     """Rasterize a trimesh mesh to a 2D height grid via raycasting.
 
@@ -23,6 +44,7 @@ def mesh_to_raster(
     mesh : trimesh.Trimesh
     cell_size : raster cell size in map units
     method : "MINIMUM_HEIGHT" (rays up from below) or "MAXIMUM_HEIGHT" (rays down from above)
+    use_gpu : attempt GPU raycasting if CUDA Open3D available
 
     Returns
     -------
@@ -32,10 +54,22 @@ def mesh_to_raster(
     xmin, ymin, zmin = bounds[0]
     xmax, ymax, zmax = bounds[1]
 
+    # Select device
+    device = o3d.core.Device("CPU:0")
+    if use_gpu and _HAS_CUDA:
+        try:
+            device = o3d.core.Device("CUDA:0")
+        except RuntimeError:
+            device = o3d.core.Device("CPU:0")
+
     # Build Open3D raycasting scene
-    o3d_mesh = o3d.t.geometry.TriangleMesh()
-    o3d_mesh.vertex.positions = o3d.core.Tensor(mesh.vertices.astype(np.float32))
-    o3d_mesh.triangle.indices = o3d.core.Tensor(mesh.faces.astype(np.int32))
+    o3d_mesh = o3d.t.geometry.TriangleMesh(device)
+    o3d_mesh.vertex.positions = o3d.core.Tensor(
+        mesh.vertices.astype(np.float32), device=device
+    )
+    o3d_mesh.triangle.indices = o3d.core.Tensor(
+        mesh.faces.astype(np.int32), device=device
+    )
     scene = o3d.t.geometry.RaycastingScene()
     scene.add_triangles(o3d_mesh)
 
@@ -98,19 +132,33 @@ def write_geotiff(
     transform: "rasterio.transform.Affine",
     crs: str,
     output_path: str,
+    tiled: bool = True,
+    compress: str = "deflate",
 ) -> None:
-    """Write a 2D numpy array as a single-band GeoTIFF."""
-    with rasterio.open(
-        output_path, "w",
-        driver="GTiff",
-        height=array.shape[0],
-        width=array.shape[1],
-        count=1,
-        dtype="float32",
-        crs=crs,
-        transform=transform,
-        nodata=np.nan,
-    ) as dst:
+    """Write a 2D numpy array as a single-band GeoTIFF.
+
+    Optimized with tiling and compression for fast NVMe I/O.
+    """
+    profile = {
+        "driver": "GTiff",
+        "height": array.shape[0],
+        "width": array.shape[1],
+        "count": 1,
+        "dtype": "float32",
+        "crs": crs,
+        "transform": transform,
+        "nodata": np.nan,
+    }
+
+    # Use tiled + compressed output for large rasters
+    if tiled and min(array.shape) > 256:
+        profile["tiled"] = True
+        profile["blockxsize"] = 256
+        profile["blockysize"] = 256
+        if compress:
+            profile["compress"] = compress
+
+    with rasterio.open(output_path, "w", **profile) as dst:
         dst.write(array.astype(np.float32), 1)
     logger.info("Wrote GeoTIFF: %s (%s)", output_path, array.shape)
 

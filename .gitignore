@@ -23,6 +23,9 @@ scratch/
 temp/
 output/
 
+# IFC parse cache
+ifc_cache/
+
 # Raster files (large, generated)
 *.tif
 *.tfw
