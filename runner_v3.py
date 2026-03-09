@@ -35,6 +35,7 @@ parser.add_argument("--publish-target", type=str, default="optimized",
                     choices=list(PUBLISH_SCRIPTS.keys()),
                     help="AGOL publish target (default: optimized)")
 parser.add_argument("--no-filter", action="store_true", help="Skip deep model filter")
+parser.add_argument("--fresh", action="store_true", help="Clear IFC cache and reimport all files from source")
 args = parser.parse_args()
 
 logging.basicConfig(
@@ -57,8 +58,9 @@ else:
 
 mode = "TEST MODE" if args.test else "FULL MODE"
 filter_str = " [no-filter]" if args.no_filter else " [deep-filter]"
+fresh_str = " [fresh]" if args.fresh else ""
 publish_str = f" + AGOL publish ({args.publish_target})" if args.publish else ""
-logging.info(f"=== Pipeline started ({mode}, {tier}{filter_str}{publish_str}) ===")
+logging.info(f"=== Pipeline started ({mode}, {tier}{filter_str}{fresh_str}{publish_str}) ===")
 
 for script in scripts:
     try:
@@ -76,6 +78,8 @@ for script in scripts:
                 cmd.append("--moderate")
             if args.no_filter:
                 cmd.append("--no-filter")
+            if args.fresh:
+                cmd.append("--fresh")
         # Stream output so pipeline_server can capture it for SharePoint logs
         proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
         for line in proc.stdout:
@@ -91,4 +95,25 @@ for script in scripts:
         logging.error(f"Details: {e.stderr[-2000:] if e.stderr else 'No stderr'}")
         sys.exit(1)
 
-logging.info(f"=== Pipeline completed ({mode}, {tier}{filter_str}{publish_str}) ===")
+# Upload Excel to SharePoint when publishing to production
+if args.publish and args.publish_target == "production":
+    try:
+        logging.info("Uploading masseuttak Excel to SharePoint...")
+        print("Uploading masseuttak_bb5_mhkk.xlsx to SharePoint...")
+        python311 = r"C:\Program Files\Python311\python.exe"
+        upload_cmd = [python311, "upload_excel.py"]
+        proc = subprocess.Popen(upload_cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
+        for line in proc.stdout:
+            sys.stdout.write(line)
+            sys.stdout.flush()
+        proc.wait()
+        if proc.returncode != 0:
+            logging.warning("Excel upload failed (non-critical)")
+            print("WARNING: Excel upload to SharePoint failed (non-critical)")
+        else:
+            logging.info("Excel upload complete")
+    except Exception as e:
+        logging.warning(f"Excel upload error (non-critical): {e}")
+        print(f"WARNING: Excel upload error: {e}")
+
+logging.info(f"=== Pipeline completed ({mode}, {tier}{filter_str}{fresh_str}{publish_str}) ===")

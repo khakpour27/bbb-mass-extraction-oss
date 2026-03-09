@@ -52,6 +52,7 @@ def load_config():
 # PHASE DETECTION — maps stdout lines to progress
 # ============================================================
 PHASE_MAP = [
+    ("--fresh: Clearing IFC cache", "cache_clear", 3),
     ("Checking cache", "ifc_cache", 5),
     ("IFC import (model) done", "ifc_import_model", 10),
     ("IFC import (tunnel) done", "ifc_import_tunnel", 15),
@@ -165,6 +166,7 @@ class RunManager:
         publish = trigger_config.get("publish", self.cfg["pipeline"]["default_publish"])
         publish_target = trigger_config.get("publish_target", "auto")
         no_filter = trigger_config.get("no_filter", False)
+        fresh = trigger_config.get("fresh", False)
         test_mode = trigger_config.get("test", False)
 
         # Resolve publish target
@@ -210,6 +212,8 @@ class RunManager:
                 cmd.append(f"--publish-target={publish_target}")
             if no_filter:
                 cmd.append("--no-filter")
+            if fresh:
+                cmd.append("--fresh")
             if test_mode:
                 cmd.append("--test")
         else:

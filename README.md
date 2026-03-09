@@ -11,6 +11,7 @@ propy runner_v3.py --aggressive                              # Maks parallellise
 propy runner_v3.py --publish --publish-target production     # Kjør + publiser til produksjon
 propy runner_v3.py --test                                    # Testmodus (10 IFC-filer)
 propy runner_v3.py --no-filter                               # Uten deep model filter
+propy runner_v3.py --fresh                                   # Slett cache, reimporter alt
 propy runner_v3.py --sequential                              # Enkeltrådet (debug)
 ```
 
@@ -31,6 +32,7 @@ propy runner_v3.py --sequential                              # Enkeltrådet (deb
 | `deep_model_filter.py` | Detekterer infrastrukturmodeller som går dypt uten tunnel |
 | `tunnel_fix_strategies.py` | Pluggbare tunnel-fix strategier (A, B, D, E). Strategy E on hold. |
 | `tunnel_vol.py` | Tunnelvolumberegning (kjøres av runner etter mass_calc) |
+| `upload_excel.py` | Laster opp `masseuttak_bb5_mhkk.xlsx` til SharePoint via Graph API |
 
 ## Deep Model Filter
 
@@ -126,6 +128,7 @@ pipeline_runs/
 | `publish` | `true`, `false` | `false` | Publiser til AGOL etter kjøring |
 | `publish_target` | `auto`, `optimized`, `legacy`, `fixed`, `production` | `auto` | AGOL-mappe |
 | `no_filter` | `true`, `false` | `false` | Hopp over deep model filter |
+| `fresh` | `true`, `false` | `false` | Slett IFC-cache og reimporter alle filer |
 | `test` | `true`, `false` | `false` | Testmodus (kun 10 IFC-filer) |
 
 ### AGOL Publish targets
@@ -155,6 +158,13 @@ pipeline_runs/
   import keyring
   keyring.set_password("bybanen_agol", "ADM_COWI", "<passord>")
   ```
+
+## Excel-resultat til SharePoint
+
+Ved produksjonskjøring (`--publish --publish-target production`) lastes `masseuttak_bb5_mhkk.xlsx` automatisk opp til SharePoint:
+`60-WIP/.../Automatisert mengdehøsting/Resultatfiler/Tverrfaglig masseuttak/masseuttak_bb5_mhkk.xlsx`
+
+scbm's originale `masseuttak_bb5.xlsx` i samme mappe forblir uendret. Opplasting er ikke-kritisk — pipelinen fullføres selv om opplastingen feiler.
 
 ## Kjente begrensninger
 

@@ -23,9 +23,11 @@
 - `server/` = SharePoint-triggered pipeline server
 - `deep_model_filter.py` = standalone filter module
 - `tunnel_fix_strategies.py` = experimental strategies (Strategy E on hold)
+- `upload_excel.py` = uploads masseuttak_bb5_mhkk.xlsx to SharePoint (Graph API, Python 3.11)
 
 ## Testing
 - Use `--test` flag to process only 10 IFC files
 - Use `--sequential` for single-threaded debugging
 - Use `--no-filter` to compare with/without deep model filter
+- Use `--fresh` to clear IFC cache and reimport all files from source
 - Publish to `optimized`/`legacy`/`fixed` folders for comparison; only `production` overwrites live data

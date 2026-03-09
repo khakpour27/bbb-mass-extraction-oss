@@ -18,6 +18,8 @@
   - **BB5 Weekly Pipeline Run**: Saturdays 02:00, `runner_v3.py --moderate --publish --publish-target production`
   - **Disabled scbm's `bb5_masseberegning`** task to avoid conflicts (was Saturdays 02:23)
   - Tasks registered under `PC04355\Administrator`, installer at `server\install_task.ps1`
+- **Added `--fresh` flag** — clears IFC cache and reimports all files from source (also in trigger.json schema)
+- **Added Excel upload to SharePoint** — `upload_excel.py` uploads `masseuttak_bb5_mhkk.xlsx` via Graph API when publishing to production. scbm's file untouched.
 
 ### mass_calc_v3.py — Production Pipeline
 Key changes vs v2:
@@ -55,6 +57,9 @@ python runner_v3.py --no-filter                              # Skip filter for c
 2. **Strategy E refinement** (on hold): Overcorrects — may be fixed by adjusting depth threshold.
 
 3. **Power Automate / Power Apps**: User will build trigger UI and monitoring dashboards.
+
+4. **Restart pipeline server** after code changes (fresh flag, Excel upload) — from admin cmd:
+   `schtasks /End /TN "BB5 Pipeline Server"` then `schtasks /Run /TN "BB5 Pipeline Server"`
 
 ## Key context
 - Hostname: PC04355, user: MHKK

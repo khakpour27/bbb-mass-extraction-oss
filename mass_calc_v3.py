@@ -705,6 +705,7 @@ if __name__ == "__main__":
     parser.add_argument("--aggressive", action="store_true", help="Aggressive parallelism: 24 IFC, 20 grid, 16 validate workers")
     parser.add_argument("--prefix", type=str, default=None, help="Only include IFC files starting with this prefix (e.g. F03)")
     parser.add_argument("--no-filter", action="store_true", help="Skip deep model filter (for comparison runs)")
+    parser.add_argument("--fresh", action="store_true", help="Clear IFC cache and reimport all files from source")
     args = parser.parse_args()
     TEST_MODE = args.test
     SKIP_DEEP_FILTER = args.no_filter
@@ -734,6 +735,11 @@ if __name__ == "__main__":
 
     if os.path.exists("scratch"):
         safe_delete("scratch")
+
+    if args.fresh and os.path.exists(IFC_CACHE_DIR):
+        print("--fresh: Clearing IFC cache...")
+        logging.warning("--fresh flag active: clearing entire IFC cache and reimporting all files")
+        shutil.rmtree(IFC_CACHE_DIR, ignore_errors=True)
 
     if not os.path.exists(IFC_CACHE_DIR):
         os.mkdir(IFC_CACHE_DIR)
