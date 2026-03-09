@@ -1,7 +1,17 @@
 temp/
 scratch/
 scratch.gdb/
+scratch_backup/
+scratch_test/
 testing.ipynb
 ifc_cache/
 output/
 run_history.log
+server/config.json
+server/setup_log.txt
+server/setup_tasks_elevated.ps1
+server/setup_tasks.cmd
+server/setup_inner.ps1
+__pycache__/
+.claude/
+*.log

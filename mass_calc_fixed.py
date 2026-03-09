@@ -5,14 +5,13 @@ import os
 import shutil
 import time
 import stat
-import json
-import argparse
 from collections import deque
 import numpy as np
 from datetime import datetime
 from multiprocessing import Pool, cpu_count
 import csv
 import logging
+from deep_model_filter import filter_deep_orphan_models
 
 
 #############################################################################################################
@@ -49,26 +48,10 @@ def clean_file_name(filename:str) -> str:
     illegals = ["-", ".", "(", ")", "[", "]", ":", " "]
     return "".join([c if c not in illegals else "_" for c in name])
 
-IFC_CACHE_DIR = "ifc_cache"
-IFC_CACHE_MANIFEST = os.path.join(IFC_CACHE_DIR, "manifest.json")
-
-def _load_cache_manifest():
-    if os.path.exists(IFC_CACHE_MANIFEST):
-        with open(IFC_CACHE_MANIFEST, "r") as f:
-            return json.load(f)
-    return {}
-
-def _save_cache_manifest(manifest):
-    with open(IFC_CACHE_MANIFEST, "w") as f:
-        json.dump(manifest, f, indent=2)
-
 def import_ifc_worker(args):
     ifc_path, scratch_gdb, spatial_ref = args
     name = clean_file_name(os.path.basename(ifc_path).replace(".ifc", ""))
-    gdb_path = os.path.join(IFC_CACHE_DIR, f"{name}.gdb")
-    if os.path.exists(gdb_path):
-        shutil.rmtree(gdb_path, ignore_errors=True)
-    temp_gdb = arcpy.management.CreateFileGDB(IFC_CACHE_DIR, f"{name}.gdb")
+    temp_gdb = arcpy.management.CreateFileGDB("temp", f"{name}.gdb")
     result =  arcpy.conversion.BIMFileToGeodatabase(
         ifc_path,
         temp_gdb,
@@ -76,48 +59,15 @@ def import_ifc_worker(args):
         spatial_ref,
         include_floorplan='EXCLUDE_FLOORPLAN'
     )
-    return result.getOutput(0)#should be a filepath for multiprocessing serialization. MP doesn't play well with arcpy objects
+    return result.getOutput(0)#should be a filepath for multiprocessing serialization. MP doesn't play well with arcpy objects    
 
 def import_ifcs_as_multipatch(ifc_path_list, scratch_gdb, spatial_ref):
-    print(f"Checking cache for {len(ifc_path_list)} IFC files...")
-    manifest = _load_cache_manifest()
-
-    to_convert = []
-    cached_results = {}
-    for ifc_path in ifc_path_list:
-        mtime = str(os.path.getmtime(ifc_path))
-        cached = manifest.get(ifc_path)
-        # Check GDB parent folder exists (feature dataset path inside GDB is virtual, not on filesystem)
-        cached_output = cached.get("output", "") if cached else ""
-        cached_gdb = cached_output.split(".gdb")[0] + ".gdb" if ".gdb" in cached_output else ""
-        if cached and cached.get("mtime") == mtime and cached_gdb and os.path.exists(cached_gdb):
-            cached_results[ifc_path] = cached["output"]
-        else:
-            to_convert.append(ifc_path)
-
-    print(f"  {len(cached_results)} cached, {len(to_convert)} to convert...")
-
-    # Convert only changed/new IFCs in parallel
-    new_results = {}
-    if to_convert:
-        args_list = [(path, scratch_gdb, spatial_ref) for path in to_convert]
-        with Pool(cpu_count()) as pool:
-            results = pool.map(import_ifc_worker, args_list)
-        for ifc_path, result in zip(to_convert, results):
-            new_results[ifc_path] = result
-            manifest[ifc_path] = {
-                "mtime": str(os.path.getmtime(ifc_path)),
-                "output": result
-            }
-        _save_cache_manifest(manifest)
-
-    # Return results in original order
-    bim_files = []
-    for ifc_path in ifc_path_list:
-        if ifc_path in cached_results:
-            bim_files.append(cached_results[ifc_path])
-        else:
-            bim_files.append(new_results[ifc_path])
+    print(f"Converting {len(ifc_path_list)} IFC files to multipatch in parallel...")
+    # pack all arguments for each worker
+    args_list = [(path, scratch_gdb, spatial_ref) for path in ifc_path_list]
+    # try 12 cores
+    with Pool(min(12, cpu_count())) as pool:
+        bim_files = pool.map(import_ifc_worker, args_list)
     return bim_files
     
 def merge_and_rasterize_multipatches(multipatches:list[arcpy.Result], cell_size=0.1, outname: str = "MERGED_MODEL_RASTER") -> arcpy.Result:
@@ -125,39 +75,16 @@ def merge_and_rasterize_multipatches(multipatches:list[arcpy.Result], cell_size=
     multipatch_fts = []
     print(f"Converting {len(multipatches)} multipatches to merged raster...")
     for f in multipatches:
-        try:
-            desc = arcpy.Describe(f)
-            for child in desc.children:
-                try:
-                    if child.shapeType == "MultiPatch":
-                        # Skip empty feature classes and validate readability
-                        count = int(arcpy.management.GetCount(child.catalogPath).getOutput(0))
-                        if count > 0:
-                            # Filter out feature classes with bad coordinates (e.g. unshifted local coords)
-                            fc_ext = arcpy.Describe(child.catalogPath).extent
-                            if (not math.isnan(fc_ext.XMin) and
-                                fc_ext.XMin > 200000 and fc_ext.XMax < 400000 and
-                                fc_ext.YMin > 6600000 and fc_ext.YMax < 6800000):
-                                multipatch_fts.append(child.catalogPath)
-                            else:
-                                logging.warning("Skipping feature class with bad extent: %s (%.0f,%.0f - %.0f,%.0f)",
-                                    child.name, fc_ext.XMin, fc_ext.YMin, fc_ext.XMax, fc_ext.YMax)
-                        else:
-                            logging.debug("Skipping empty feature class: %s", child.catalogPath)
-                except Exception as e:
-                    logging.warning("Skipping unreadable feature class in %s: %s", f, e)
-        except Exception as e:
-            logging.warning("Skipping unreadable GDB %s: %s", f, e)
+        desc = arcpy.Describe(f)
+        for child in desc.children:
+            if child.shapeType == "MultiPatch":
+                multipatch_fts.append(child.catalogPath)
 
-    logging.info("Merging %d non-empty multipatch feature classes for %s", len(multipatch_fts), outname)
-    if len(multipatch_fts) == 0:
-        logging.warning("No valid multipatch features found for %s, skipping", outname)
-        return None
     merged_mps = arcpy.management.Merge(multipatch_fts, f"memory/{outname}")
     arcpy.management.Merge(multipatch_fts, os.path.join(output_gdb, outname)) #saving model bases to output for publishing to AGOL potentially
     outpath = os.path.join(scratch_folder, f"{outname}.tif")
-
-    return arcpy.conversion.MultipatchToRaster(merged_mps,
+    
+    return arcpy.conversion.MultipatchToRaster(merged_mps, 
                                    outpath,
                                    cell_size,
                                    "MINIMUM_HEIGHT")
@@ -441,22 +368,16 @@ def cleanup_results(output_folder:str) -> None:
 ###############################################################################################################
 if __name__ == "__main__":
 
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--test", action="store_true", help="Test mode: process only 10 IFC files")
-    parser.add_argument("--prefix", type=str, default=None, help="Filter IFC files by prefix (e.g. F03)")
-    args = parser.parse_args()
-    TEST_MODE = args.test
-
     if not os.path.exists('output'):
         os.mkdir('output')
         
     if os.path.exists("scratch"):
         safe_delete("scratch")
 
-    if not os.path.exists(IFC_CACHE_DIR):
-        os.mkdir(IFC_CACHE_DIR)
+    if os.path.exists('temp'):
+        safe_delete('temp')
 
-    if len(os.listdir('output')) > 5:  # Raised from 1 to preserve v2 backup during comparison
+    if len(os.listdir('output')) > 5:
         cleanup_results('output')
 
     arcpy.CheckOutExtension("3D")
@@ -467,6 +388,7 @@ if __name__ == "__main__":
     output_folder = "output"
 
     os.mkdir(os.path.join(output_folder, f"results_{run_time}"))
+    os.mkdir("temp")
     os.mkdir("scratch")
     arcpy.management.CreateFileGDB("scratch", "scratch.gdb")
     final_out_path = os.path.join(output_folder, f"results_{run_time}")
@@ -486,16 +408,20 @@ if __name__ == "__main__":
         format='%(asctime)s - %(levelname)s - %(message)s',
         datefmt='%Y-%m-%d %H:%M:%S',
     )
-    mode_str = "TEST MODE (10 files)" if TEST_MODE else "FULL MODE"
-    logging.info("=== Script start (%s) ===", mode_str)
-    print(f"=== mass_calc.py ({mode_str}) ===")
+    logging.info("Script start")
+    # MODEL_FOLDER_PATH = r"C:\ADC\ACCDocs\COWI ACC EU\A240636 - Bergen Bybane BT5 E03\Project Files\03_Shared (non-contractual)\Discipline models"
+    # TERRAIN_PATH = r"C:\ADC\ACCDocs\COWI ACC EU\A240636 - Bergen Bybane BT5 E03\Project Files\03_Shared (non-contractual)\Existing condition models (CORAV)\Terrengflater"
+    # BERG_PATH = r"C:\ADC\ACCDocs\COWI ACC EU\A240636 - Bergen Bybane BT5 E03\Project Files\03_Shared (non-contractual)\Existing condition models (CORAV)"
+    # GRID_PATH = r"SCRIPT_HELP_FILES\AOI.gdb\INDEX_GRID_200_overlap" 
+    # MUNKEBOTN_MASK = r"SCRIPT_HELP_FILES\munkebotn_mask.tif"
+    # CELL_SIZE = 0.2 #20 cm
 
     MODEL_FOLDER_PATH = r"C:\Users\MHKK\DC\ACCDocs\COWI ACC EU\A240636 - Bergen Bybane BT5 E03\Project Files\03_Shared (non-contractual)\Discipline models"
     TERRAIN_PATH = r"C:\Users\MHKK\DC\ACCDocs\COWI ACC EU\A240636 - Bergen Bybane BT5 E03\Project Files\03_Shared (non-contractual)\Existing condition models (CORAV)\Terrengflater"
     BERG_PATH = r"C:\Users\MHKK\DC\ACCDocs\COWI ACC EU\A240636 - Bergen Bybane BT5 E03\Project Files\03_Shared (non-contractual)\Existing condition models (CORAV)"
-    GRID_PATH = r"SCRIPT_HELP_FILES\AOI.gdb\INDEX_GRID_200_overlap"
+    GRID_PATH = r"SCRIPT_HELP_FILES\AOI.gdb\INDEX_GRID_200_overlap" 
     MUNKEBOTN_MASK = r"SCRIPT_HELP_FILES\munkebotn_mask.tif"
-    CELL_SIZE = 1.0 if TEST_MODE else 0.2  # 1m for test, 20cm for production
+    CELL_SIZE = 0.2 #20 cm
 
 
     #################################################################################################################################
@@ -508,31 +434,7 @@ if __name__ == "__main__":
     berg_list = list_berg_ifcs(BERG_PATH)
     terrain_xml_list = list_land_xmls(TERRAIN_PATH)
 
-    if args.prefix:
-        pfx = args.prefix
-        model_list = [m for m in model_list if os.path.basename(m).startswith(pfx)]
-        tunnel_list = [t for t in tunnel_list if os.path.basename(t).startswith(pfx)]
-        berg_list = [b for b in berg_list if os.path.basename(b).startswith(pfx)]
-        terrain_xml_list = [t for t in terrain_xml_list if os.path.basename(t).startswith(pfx)]
-        logging.info("PREFIX FILTER: %s — %d models, %d tunnels, %d berg, %d terrain",
-                     pfx, len(model_list), len(tunnel_list), len(berg_list), len(terrain_xml_list))
-
-    if TEST_MODE:
-        # Pick models from a single area code to keep geographic extent small
-        test_prefix = "E03_011"
-        model_list = [m for m in model_list if os.path.basename(m).startswith(test_prefix)]
-        tunnel_list = [t for t in tunnel_list if os.path.basename(t).startswith(test_prefix)]
-        if not tunnel_list:
-            tunnel_list = tunnel_list[:1]  # need at least 1 for pipeline
-        berg_list = berg_list[:1]
-        terrain_xml_list = terrain_xml_list[:1]
-        logging.info("TEST MODE: area prefix=%s, %d models, %d tunnels, %d berg, %d terrain",
-                     test_prefix, len(model_list), len(tunnel_list), len(berg_list), len(terrain_xml_list))
-
-    logging.info("Input counts: %d models, %d tunnels, %d berg, %d terrain",
-                 len(model_list), len(tunnel_list), len(berg_list), len(terrain_xml_list))
-    print(f"Input: {len(model_list)} models, {len(tunnel_list)} tunnels, {len(berg_list)} berg, {len(terrain_xml_list)} terrain")
-
+    print("Importing model IFCs as multipatch...")
     for model in model_list:
         logging.info("Input model: %s", os.path.basename(model))
 
@@ -545,11 +447,7 @@ if __name__ == "__main__":
     for terr in terrain_xml_list:
         logging.info("Input terrain model: %s", os.path.basename(terr))
 
-    logging.info("Starting IFC import (model)...")
-    t0 = time.time()
     bim_mps = import_ifcs_as_multipatch(model_list, scratch_gdb, arcpy.env.outputCoordinateSystem)
-    logging.info("IFC import (model) completed in %.1f seconds", time.time() - t0)
-    print(f"IFC import done in {time.time() - t0:.1f}s")
     print("Sinking Sporsystem 900mm...")
     # Find all multipatches in sporsystem feature datasets and adjust all elevations downward 900mm.
      
@@ -560,29 +458,32 @@ if __name__ == "__main__":
             if child.shapeType == "MultiPatch":
                 arcpy.management.Adjust3DZ(child.catalogPath, "NO_REVERSE", -0.9)
 
+    # Import tunnel IFCs first (needed for deep model detection)
+    print("Importing tunnel IFCs...")
+    tunnel_mps = import_ifcs_as_multipatch(tunnel_list, scratch_gdb, arcpy.env.outputCoordinateSystem)
+
+    # Filter out deep models without tunnel coverage
+    print("Checking for orphaned deep models...")
+    excluded = filter_deep_orphan_models(bim_mps, tunnel_mps, depth_threshold=5.0)
+    if excluded:
+        for path, reason in excluded:
+            logging.warning("Excluded model: %s — %s", os.path.basename(path), reason["reason"])
+
     print("Merging model multipatches and converting to raster...")
-    logging.info("Merging and rasterizing model multipatches...")
-    t0 = time.time()
+
     full_model_raster = merge_and_rasterize_multipatches(bim_mps, CELL_SIZE, "MERGED_MODEL_RASTER").getOutput(0)
-    logging.info("Model rasterization completed in %.1f seconds", time.time() - t0)
-    print(f"IFC models to raster complete ({time.time() - t0:.1f}s)")
+
+    print("IFC models to raster complete.")
 
     arcpy.env.snapRaster = full_model_raster #snapping all following raster processing to model raster grid
 
     print("Creating tunnel mask...")
-    logging.info("Starting IFC import (tunnel)...")
-    t0 = time.time()
-    tunnel_mps = import_ifcs_as_multipatch(tunnel_list, scratch_gdb, arcpy.env.outputCoordinateSystem)
-    logging.info("IFC import (tunnel) completed in %.1f seconds", time.time() - t0)
-    tunnel_result = merge_and_rasterize_multipatches(tunnel_mps, CELL_SIZE, "MERGED_TUNNEL_RASTER")
 
-    if tunnel_result is not None:
-        full_tunnel_raster = tunnel_result.getOutput(0)
-        tunnel_raster_mem = arcpy.Raster(full_tunnel_raster)
-        merged_tunnel_mask = arcpy.ia.Merge([tunnel_raster_mem, MUNKEBOTN_MASK], "First")
-    else:
-        logging.info("No tunnel data, using munkebotn mask only")
-        merged_tunnel_mask = arcpy.Raster(MUNKEBOTN_MASK)
+    full_tunnel_raster = merge_and_rasterize_multipatches(tunnel_mps, CELL_SIZE, "MERGED_TUNNEL_RASTER").getOutput(0)
+
+    tunnel_raster_mem = arcpy.Raster(full_tunnel_raster)
+    munkebotn_raster = arcpy.Raster(MUNKEBOTN_MASK)
+    merged_tunnel_mask = arcpy.ia.Merge([tunnel_raster_mem, MUNKEBOTN_MASK], "First")
 
     print("Clipping model raster against tunnel mask...")
 
@@ -603,27 +504,21 @@ if __name__ == "__main__":
 
 
     print("Converting terrain and berg layers to raster...")
-    logging.info("Converting %d terrain XMLs to raster...", len(terrain_xml_list))
-    t0 = time.time()
     for terrain_xml in terrain_xml_list:
         basename = terrain_xml.split("-")[-1].replace(".xml","")
         convert_landxml_to_tin(terrain_xml, "terrain_TIN", basename)
 
-    terrain_tin_folder = os.path.join(scratch_folder, "terrain_TIN") 
+    terrain_tin_folder = os.path.join(scratch_folder, "terrain_TIN")
     full_terrain_raster = tins_to_merged_raster(terrain_tin_folder, CELL_SIZE)
     terrain_output = arcpy.Raster(full_terrain_raster)
     terrain_output.save(os.path.join(final_out_path, "TERRAIN_MERGED_RASTER.tif"))
-    logging.info("Terrain conversion completed in %.1f seconds", time.time() - t0)
-    print(f"Terrain layers converted to raster ({time.time() - t0:.1f}s)")
+    print("Terrain layers successfully converted to raster.")
 
-    logging.info("Starting IFC import (berg)...")
-    t0 = time.time()
     berg_mps = import_ifcs_as_multipatch(berg_list, scratch_gdb, arcpy.env.outputCoordinateSystem)
-    logging.info("IFC import (berg) completed in %.1f seconds", time.time() - t0)
     full_berg_raster = merge_and_rasterize_multipatches(berg_mps, CELL_SIZE, "MERGED_BERG_RASTER").getOutput(0)
     berg_output = arcpy.Raster(full_berg_raster)
     berg_output.save(os.path.join(final_out_path, "BERG_MERGED_RASTER.tif"))
-    print(f"Berg layers converted to raster ({time.time() - t0:.1f}s)")
+    print("Berg layers successfully converted to raster.")
 
     #################################################################################################################################
     ### PROCESSSING STEPS - RASTER
@@ -658,12 +553,8 @@ if __name__ == "__main__":
             bbox = " ".join([xmin, ymin, xmax, ymax])
             grid_extents.append((row[0],bbox, ext))
 
-    logging.info("Grid processing: %d tiles to process", len(grid_extents))
-    print(f"Grid processing: {len(grid_extents)} tiles")
-    t0 = time.time()
-
-    #Clipping input rasters
-    print("Clipping input rasters...")
+    #Clipping input rasters 
+    print("Clipping input rasters")
     for cell in grid_extents:
         bbox = cell[1]
         id = cell[0]
@@ -803,38 +694,29 @@ if __name__ == "__main__":
 
     final_result = arcpy.ia.Merge(final_model_tiles, "MIN")
     final_result.save(os.path.join(final_out_path, "FINAL_RESULT_RASTER.tif"))
-    logging.info("Grid processing completed in %.1f seconds", time.time() - t0)
-    print(f"Final result complete ({time.time() - t0:.1f}s)")
+    print("final result complete.")
 
     print("Calculating volumes...")
-    logging.info("Calculating volumes...")
 
-    terrain_vol = 0
-    berg_vol = 0
+    terrain_cut = arcpy.ddd.CutFill(
+    in_before_surface=os.path.join(final_out_path, "TERRAIN_MERGED_RASTER.tif"),
+    in_after_surface=os.path.join(final_out_path, "FINAL_RESULT_RASTER.tif"),
+    z_factor=1
+    )
 
-    try:
-        terrain_cut = arcpy.ddd.CutFill(
-            in_before_surface=os.path.join(final_out_path, "TERRAIN_MERGED_RASTER.tif"),
-            in_after_surface=os.path.join(final_out_path, "FINAL_RESULT_RASTER.tif"),
-            z_factor=1
-        )
-        terrain_cut = arcpy.Raster(terrain_cut)
-        terrain_vol = sum([v for v in terrain_cut.RAT['VOLUME'] if v > 0])
-    except Exception as e:
-        logging.warning("Terrain CutFill failed (surfaces may not overlap): %s", e)
+    berg_cut = arcpy.ddd.CutFill(
+    in_before_surface=os.path.join(final_out_path, "BERG_MERGED_RASTER.tif"),
+    in_after_surface=os.path.join(final_out_path, "FINAL_RESULT_RASTER.tif"),
+    z_factor=1
+    )
 
-    try:
-        berg_cut = arcpy.ddd.CutFill(
-            in_before_surface=os.path.join(final_out_path, "BERG_MERGED_RASTER.tif"),
-            in_after_surface=os.path.join(final_out_path, "FINAL_RESULT_RASTER.tif"),
-            z_factor=1
-        )
-        berg_cut = arcpy.Raster(berg_cut)
-        berg_vol = sum([v for v in berg_cut.RAT['VOLUME'] if v > 0])
-    except Exception as e:
-        logging.warning("Berg CutFill failed (surfaces may not overlap): %s", e)
+    berg_cut = arcpy.Raster(berg_cut)
+    terrain_cut = arcpy.Raster(terrain_cut)
 
-    sediment_vol = terrain_vol - berg_vol
+    terrain_vol = sum([v for v in terrain_cut.RAT['VOLUME'] if v > 0])
+    berg_vol = sum([v for v in berg_cut.RAT['VOLUME'] if v > 0])
+
+    sediment_vol = terrain_vol - berg_vol 
 
     with open(os.path.join(final_out_path, "volumes.csv"), "w", newline='') as csvfile:
         writer = csv.writer(csvfile, delimiter=";")
@@ -846,12 +728,11 @@ if __name__ == "__main__":
     df = pd.read_csv(os.path.join(final_out_path, "volumes.csv"), sep=";")
     df.to_excel(os.path.join(final_out_path, "masseuttak_bb5.xlsx"), sheet_name="Mengder", index=False)
 
-    logging.info("Volumes: berg=%.1f m3, sediment=%.1f m3, total_terrain=%.1f m3", berg_vol, sediment_vol, terrain_vol)
-    print(f"Volumes: berg={berg_vol:.1f} m3, sediment={sediment_vol:.1f} m3")
     print("Cleaning up...")
     arcpy.CheckInExtension("3D")
     arcpy.CheckInExtension("Spatial")
     arcpy.management.Delete(scratch_folder)
     arcpy.management.Delete(scratch_gdb)
     safe_delete('scratch')
+    safe_delete('temp')
     logging.info("Script end")

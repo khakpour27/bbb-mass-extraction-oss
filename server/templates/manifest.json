@@ -1,0 +1,47 @@
+{
+  "_help": "Pipeline run manifest — updated live during execution. Read-only for external consumers.",
+
+  "run_id": "RUN_20260308_143000",
+  "status": "running",
+  "phase": "grid_phase_b",
+  "progress": 75,
+  "started_at": "2026-03-08T14:30:00",
+  "updated_at": "2026-03-08T15:05:00",
+  "finished_at": null,
+  "elapsed_s": 2100,
+
+  "pipeline": "v3",
+  "tier": "moderate",
+  "publish_target": "optimized",
+
+  "config": {
+    "pipeline": "v3",
+    "tier": "moderate",
+    "publish": true,
+    "publish_target": "auto",
+    "no_filter": false,
+    "test": false
+  },
+
+  "last_line": "Phase B complete (162.5s, 134 tiles: min=2.1s max=42.2s avg=10.8s)",
+  "volumes": {
+    "berg_m3": 290259.0,
+    "sediment_m3": 1284315.0
+  },
+  "warnings": [
+    "WARNING: Berg volume 1,450,282 m3 is 4.4x the baseline (329,936 m3)"
+  ],
+  "error": null,
+
+  "_status_values": ["queued", "running", "completed", "failed"],
+  "_phase_values": [
+    "initializing", "ifc_cache", "ifc_import_model", "ifc_import_tunnel",
+    "deep_model_filter", "no_filter_warning", "sporsystem_fix",
+    "model_rasterize", "model_enumerate", "model_rasterize_done",
+    "tunnel_mask", "tunnel_clip",
+    "terrain_convert", "terrain_done", "berg_done",
+    "grid_start", "grid_phase_a", "grid_phase_a_done",
+    "grid_barrier", "grid_phase_b", "grid_phase_b_done", "grid_done",
+    "volume_calc", "volumes_done", "summary", "cleanup", "done", "error"
+  ]
+}

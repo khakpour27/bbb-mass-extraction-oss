@@ -1,15 +1,18 @@
 """
-mass_calc_v2.py — Performance-optimized version of mass_calc.py
+mass_calc_v3.py — Production pipeline with deep model filter and tunable parallelism.
 
-Changes vs original:
-  1. Grid processing parallelized with multiprocessing.Pool (Phase A / barrier / Phase B)
-  2. NumPy nested loops vectorized in filter_model_under_berg, merge_buffer_with_berg, merge_berg_with_existing_models
-  3. Terrain raster object cached outside loop
-  4. Adjacent loops combined (loops 5+6, loops 7a+7b)
-  5. Multipatch metadata validation parallelized in merge_and_rasterize_multipatches
-  6. --sequential fallback flag for debugging, --workers N flag
+Based on mass_calc_v2.py with the following additions:
+  1. Deep model filter: detects and excludes infrastructure models (Veg, FVG, Spo) that go
+     deep underground without corresponding tunnel coverage. Prevents false excavation.
+  2. Tunnel import reordered BEFORE model rasterization so filter can modify bim_mps in-place.
+  3. Performance tiers: --moderate (12 grid, 12 IFC workers) and --aggressive (20 grid, 24 IFC).
+  4. Split worker counts: NUM_WORKERS_IFC, NUM_WORKERS_GRID, NUM_WORKERS_VALIDATE.
 
-Original mass_calc.py is unchanged — rollback by running runner.py instead of runner_v2.py.
+Inherited from v2:
+  - Grid processing parallelized with multiprocessing.Pool (Phase A / barrier / Phase B)
+  - NumPy vectorized raster operations
+  - IFC caching with manifest.json
+  - Sporsystem Z-offset fix (copy to scratch before Adjust3DZ)
 """
 import arcpy
 import math
@@ -26,6 +29,7 @@ from datetime import datetime
 from multiprocessing import Pool, cpu_count
 import csv
 import logging
+from deep_model_filter import filter_deep_orphan_models
 
 
 #############################################################################################################
@@ -91,7 +95,9 @@ def import_ifc_worker(args):
     )
     return result.getOutput(0)
 
-def import_ifcs_as_multipatch(ifc_path_list, scratch_gdb, spatial_ref):
+def import_ifcs_as_multipatch(ifc_path_list, scratch_gdb, spatial_ref, num_workers=None):
+    if num_workers is None:
+        num_workers = cpu_count()
     print(f"Checking cache for {len(ifc_path_list)} IFC files...")
     manifest = _load_cache_manifest()
 
@@ -107,13 +113,24 @@ def import_ifcs_as_multipatch(ifc_path_list, scratch_gdb, spatial_ref):
         else:
             to_convert.append(ifc_path)
 
-    print(f"  {len(cached_results)} cached, {len(to_convert)} to convert...")
+    print(f"  {len(cached_results)} cached, {len(to_convert)} to convert")
+    logging.info("Cache status: %d cached, %d to convert", len(cached_results), len(to_convert))
+    for ifc_path in sorted(cached_results.keys()):
+        logging.debug("  CACHED: %s", os.path.basename(ifc_path))
+    if to_convert:
+        for ifc_path in to_convert:
+            print(f"    CONVERT: {os.path.basename(ifc_path)}")
+            logging.info("  TO CONVERT: %s", os.path.basename(ifc_path))
 
     new_results = {}
     if to_convert:
         args_list = [(path, scratch_gdb, spatial_ref) for path in to_convert]
-        with Pool(cpu_count()) as pool:
-            results = pool.map(import_ifc_worker, args_list)
+        with Pool(min(num_workers, len(to_convert))) as pool:
+            results = []
+            for i, result in enumerate(pool.imap(import_ifc_worker, args_list), 1):
+                name = os.path.basename(to_convert[i-1])
+                print(f"    [{i}/{len(to_convert)}] Converted: {name}")
+                results.append(result)
         for ifc_path, result in zip(to_convert, results):
             new_results[ifc_path] = result
             manifest[ifc_path] = {
@@ -160,15 +177,16 @@ def merge_and_rasterize_multipatches(multipatches, cell_size=0.1, outname="MERGE
     Change vs original: metadata validation (GetCount + extent) parallelized across workers.
     Returns arcpy.Result. Also populates stats on the result object as result._mp_stats.
     """
-    print(f"Converting {len(multipatches)} multipatches to merged raster...")
+    print(f"Converting {len(multipatches)} multipatches to {outname}...")
 
     # Phase 1: enumerate all children per feature dataset (tracks per-GDB child counts)
     candidate_fcs = []
     gdb_child_counts = {}  # gdb_name -> {multipatch: N, other: N}
     non_multipatch_types = {}  # shapeType -> count
-    for f in multipatches:
+    for fi, f in enumerate(multipatches, 1):
         gdb_name = os.path.basename(f.split(".gdb")[0]) if ".gdb" in f else os.path.basename(f)
         gdb_child_counts[gdb_name] = {"multipatch": 0, "other": 0, "children_total": 0}
+        print(f"    [{fi}/{len(multipatches)}] Enumerating: {gdb_name}")
         try:
             desc = arcpy.Describe(f)
             for child in desc.children:
@@ -189,8 +207,15 @@ def merge_and_rasterize_multipatches(multipatches, cell_size=0.1, outname="MERGE
     if non_multipatch_types:
         logging.info("[%s] Non-multipatch geometry types skipped: %s", outname,
                      ", ".join(f"{t}={n}" for t, n in sorted(non_multipatch_types.items())))
+    total_mp = sum(c["multipatch"] for c in gdb_child_counts.values())
+    total_other = sum(c["other"] for c in gdb_child_counts.values())
+    zero_mp_gdbs = [g for g, c in gdb_child_counts.items() if c["multipatch"] == 0]
+    logging.info("[%s] Summary: %d GDBs, %d multipatch FCs, %d other FCs",
+                 outname, len(gdb_child_counts), total_mp, total_other)
+    if zero_mp_gdbs:
+        logging.warning("[%s] GDBs with 0 multipatch children: %s", outname, ", ".join(zero_mp_gdbs))
     for gdb, counts in gdb_child_counts.items():
-        logging.info("[%s]   %s: %d children (%d multipatch, %d other)",
+        logging.debug("[%s]   %s: %d children (%d multipatch, %d other)",
                      outname, gdb, counts["children_total"], counts["multipatch"], counts["other"])
 
     # Phase 2: validate (GetCount + extent) in parallel
@@ -227,6 +252,11 @@ def merge_and_rasterize_multipatches(multipatches, cell_size=0.1, outname="MERGE
     logging.info("[%s] Validation: %d valid (%d objects), %d empty, %d bad_extent, %d error — of %d candidates",
                  outname, stats["valid"], stats["valid_objects"], stats["empty"], stats["bad_extent"], stats["error"],
                  len(candidate_fcs))
+    empty_pct = (stats["empty"] / len(candidate_fcs) * 100) if candidate_fcs else 0
+    print(f"  {outname}: {stats['valid']} valid FCs ({stats['valid_objects']} objects), "
+          f"{stats['empty']} empty ({empty_pct:.0f}% — normal for BIM import)")
+    if stats["bad_extent"] > 0 or stats["error"] > 0:
+        print(f"  WARNING: {outname} has {stats['bad_extent']} bad extents, {stats['error']} errors")
 
     # Log top feature classes by object count
     top_fcs = sorted(stats["fc_details"], key=lambda x: x["count"], reverse=True)
@@ -259,6 +289,10 @@ def merge_and_rasterize_multipatches(multipatches, cell_size=0.1, outname="MERGE
                      ext.XMin, ext.YMin, ext.XMax, ext.YMax,
                      out_ras.minimum if out_ras.minimum is not None else 0,
                      out_ras.maximum if out_ras.maximum is not None else 0)
+        if out_ras.minimum is not None and out_ras.minimum < -5:
+            logging.warning("[%s] NEGATIVE Z detected: minimum=%.2f — possible deep underground geometry "
+                            "(e.g., Sporsystem DS1). Consider using deep model filter.", outname, out_ras.minimum)
+            print(f"  WARNING: {outname} has Z minimum={out_ras.minimum:.2f}m (deep underground geometry detected)")
     except Exception as e:
         logging.warning("[%s] Could not read raster properties: %s", outname, e)
 
@@ -645,13 +679,13 @@ def safe_delete(path, retries=3):
             elif os.path.isfile(path):
                 os.chmod(path, stat.S_IWRITE)
                 os.remove(path)
-            print(f"Deleted: {path}")
+            logging.debug("Deleted: %s", path)
             break
         except PermissionError as e:
-            print(f"PermissionError on {path}, retrying...")
+            logging.warning("PermissionError on %s, retrying (%d/%d)...", path, attempt + 1, retries)
             time.sleep(1)
         except Exception as e:
-            print(f"Error: {e}")
+            logging.warning("safe_delete error on %s: %s", path, e)
             break
 
 def cleanup_results(output_folder: str) -> None:
@@ -667,11 +701,33 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--test", action="store_true", help="Test mode: process only 10 IFC files")
     parser.add_argument("--sequential", action="store_true", help="Disable multiprocessing for grid processing (debug mode)")
-    parser.add_argument("--workers", type=int, default=12, help="Number of worker processes for grid processing (default: 12)")
+    parser.add_argument("--moderate", action="store_true", help="Moderate parallelism: 12 IFC, 12 grid, 8 validate workers")
+    parser.add_argument("--aggressive", action="store_true", help="Aggressive parallelism: 24 IFC, 20 grid, 16 validate workers")
     parser.add_argument("--prefix", type=str, default=None, help="Only include IFC files starting with this prefix (e.g. F03)")
+    parser.add_argument("--no-filter", action="store_true", help="Skip deep model filter (for comparison runs)")
     args = parser.parse_args()
     TEST_MODE = args.test
-    NUM_WORKERS = 1 if args.sequential else min(args.workers, cpu_count())
+    SKIP_DEEP_FILTER = args.no_filter
+
+    # Performance tiers
+    cpus = cpu_count()
+    if args.sequential:
+        NUM_WORKERS_IFC = 1
+        NUM_WORKERS_GRID = 1
+        NUM_WORKERS_VALIDATE = 1
+    elif args.aggressive:
+        NUM_WORKERS_IFC = min(24, cpus)
+        NUM_WORKERS_GRID = min(20, cpus)
+        NUM_WORKERS_VALIDATE = min(16, cpus)
+    elif args.moderate:
+        NUM_WORKERS_IFC = min(12, cpus)
+        NUM_WORKERS_GRID = min(12, cpus)
+        NUM_WORKERS_VALIDATE = min(8, cpus)
+    else:
+        # Default: moderate
+        NUM_WORKERS_IFC = min(12, cpus)
+        NUM_WORKERS_GRID = min(12, cpus)
+        NUM_WORKERS_VALIDATE = min(8, cpus)
 
     if not os.path.exists('output'):
         os.mkdir('output')
@@ -713,10 +769,18 @@ if __name__ == "__main__":
         datefmt='%Y-%m-%d %H:%M:%S',
     )
     mode_str = "TEST MODE (10 files)" if TEST_MODE else "FULL MODE"
-    seq_str = "sequential" if args.sequential else f"{NUM_WORKERS} workers"
-    logging.info("=== Script start (%s, %s) ===", mode_str, seq_str)
-    logging.info("Environment: CPUs=%d, workers=%d", cpu_count(), NUM_WORKERS)
-    print(f"=== mass_calc_v2.py ({mode_str}, {seq_str}) ===")
+    if args.sequential:
+        tier_str = "sequential"
+    elif args.aggressive:
+        tier_str = "aggressive"
+    else:
+        tier_str = "moderate"
+    seq_str = f"{tier_str} (IFC={NUM_WORKERS_IFC}, grid={NUM_WORKERS_GRID}, validate={NUM_WORKERS_VALIDATE})"
+    filter_str = " [no-filter]" if SKIP_DEEP_FILTER else " [deep-filter]"
+    logging.info("=== Script start (%s, %s%s) ===", mode_str, seq_str, filter_str)
+    logging.info("Environment: CPUs=%d, IFC=%d, grid=%d, validate=%d",
+                 cpu_count(), NUM_WORKERS_IFC, NUM_WORKERS_GRID, NUM_WORKERS_VALIDATE)
+    print(f"=== mass_calc_v3.py ({mode_str}, {seq_str}{filter_str}) ===")
 
     pipeline_start = time.time()
     timings = {}  # phase_name -> seconds
@@ -779,11 +843,14 @@ if __name__ == "__main__":
 
     for label, file_list in [("model", model_list), ("tunnel", tunnel_list), ("berg", berg_list), ("terrain", terrain_xml_list)]:
         total_mb = 0
-        for f in file_list:
+        if file_list:
+            print(f"  {label.upper()} files ({len(file_list)}):")
+        for i, f in enumerate(file_list, 1):
             name = os.path.basename(f)
             sz = _file_size_mb(f)
             total_mb += sz
             logging.info("Input %s: %s (%.1f MB)", label, name, sz)
+            print(f"    [{i}/{len(file_list)}] {name} ({sz:.1f} MB)")
             all_input_files.append({"type": label, "name": name, "size_mb": sz, "path": f})
 
             # Extract discipline code (e.g. fm_Veg, fm_VA, fm_Ele, gm_Geo)
@@ -804,20 +871,60 @@ if __name__ == "__main__":
 
         if file_list:
             logging.info("  %s total: %d files, %.1f MB", label, len(file_list), total_mb)
+            print(f"  {label} total: {len(file_list)} files, {total_mb:.1f} MB")
 
     if discipline_counts:
-        logging.info("Discipline breakdown: %s", ", ".join(f"{k}={v}" for k, v in sorted(discipline_counts.items())))
+        disc_str = ", ".join(f"{k}={v}" for k, v in sorted(discipline_counts.items()))
+        logging.info("Discipline breakdown: %s", disc_str)
+        print(f"  Disciplines: {disc_str}")
     if area_counts:
-        logging.info("Area breakdown: %s", ", ".join(f"{k}={v}" for k, v in sorted(area_counts.items())))
+        area_str = ", ".join(f"{k}={v}" for k, v in sorted(area_counts.items()))
+        logging.info("Area breakdown: %s", area_str)
+        print(f"  Areas: {area_str}")
 
+    # =========================================================================
+    # STEP 1: Import model + tunnel IFCs
+    # =========================================================================
     logging.info("Starting IFC import (model)...")
     t0 = time.time()
-    bim_mps = import_ifcs_as_multipatch(model_list, scratch_gdb, arcpy.env.outputCoordinateSystem)
+    bim_mps = import_ifcs_as_multipatch(model_list, scratch_gdb, arcpy.env.outputCoordinateSystem, num_workers=NUM_WORKERS_IFC)
     timings["ifc_import_model"] = time.time() - t0
     logging.info("IFC import (model) completed in %.1f seconds", timings["ifc_import_model"])
-    print(f"IFC import done in {timings['ifc_import_model']:.1f}s")
-    print("Sinking Sporsystem 900mm...")
+    print(f"IFC import (model) done in {timings['ifc_import_model']:.1f}s")
 
+    logging.info("Starting IFC import (tunnel)...")
+    t0 = time.time()
+    tunnel_mps = import_ifcs_as_multipatch(tunnel_list, scratch_gdb, arcpy.env.outputCoordinateSystem, num_workers=NUM_WORKERS_IFC)
+    timings["ifc_import_tunnel"] = time.time() - t0
+    logging.info("IFC import (tunnel) completed in %.1f seconds", timings["ifc_import_tunnel"])
+    print(f"IFC import (tunnel) done in {timings['ifc_import_tunnel']:.1f}s")
+
+    # =========================================================================
+    # STEP 2: Deep model filter (before merge/rasterize so bim_mps is modified)
+    # =========================================================================
+    rasterize_stats = {}  # outname -> stats dict
+
+    if not SKIP_DEEP_FILTER and tunnel_mps:
+        print("Running deep model filter...")
+        t0 = time.time()
+        excluded_models = filter_deep_orphan_models(bim_mps, tunnel_mps, depth_threshold=5.0)
+        timings["deep_model_filter"] = time.time() - t0
+        logging.info("Deep model filter completed in %.1f seconds: %d model(s) excluded",
+                     timings["deep_model_filter"], len(excluded_models))
+        for path, reason in excluded_models:
+            logging.info("  Excluded: %s — %s", os.path.basename(path), reason["reason"])
+        print(f"Deep model filter done ({timings['deep_model_filter']:.1f}s, {len(excluded_models)} excluded)")
+    else:
+        timings["deep_model_filter"] = 0
+        if SKIP_DEEP_FILTER:
+            logging.warning("Deep model filter SKIPPED (--no-filter) — deep underground models will NOT be "
+                            "excluded. Berg volume may be inflated by false excavation.")
+            print("WARNING: --no-filter active. Deep models NOT excluded — berg volume may be inflated.")
+
+    # =========================================================================
+    # STEP 3: Sporsystem Z-offset fix
+    # =========================================================================
+    print("Sinking Sporsystem 900mm...")
     # FIX: Copy Sporsystem feature datasets to scratch before adjusting Z,
     # so the cached GDBs are not modified (avoids cumulative -0.9m per run).
     spor_fds = [f for f in bim_mps if "Sporsystem" in f]
@@ -825,7 +932,6 @@ if __name__ == "__main__":
     for spor_mod in spor_fds:
         ds_name = os.path.basename(spor_mod)
         src_gdb = os.path.dirname(spor_mod)
-        # Copy entire GDB to scratch via shutil, then adjust Z in the copy
         dst_gdb = os.path.join(scratch_folder, os.path.basename(src_gdb))
         if not os.path.exists(dst_gdb):
             shutil.copytree(src_gdb, dst_gdb)
@@ -837,18 +943,19 @@ if __name__ == "__main__":
         adjusted_spor.append((spor_mod, copy_path))
         logging.info("Sporsystem %s: copied to scratch and adjusted Z by -0.9m", ds_name)
 
-    # Replace cached paths with adjusted copies in the bim_mps list
     for orig, copy in adjusted_spor:
         idx = bim_mps.index(orig)
         bim_mps[idx] = copy
 
+    # =========================================================================
+    # STEP 4: Model rasterization
+    # =========================================================================
     print("Merging model multipatches and converting to raster...")
     logging.info("Merging and rasterizing model multipatches...")
     t0 = time.time()
-    rasterize_stats = {}  # outname -> stats dict
     model_raster_result = merge_and_rasterize_multipatches(
         bim_mps, CELL_SIZE, "MERGED_MODEL_RASTER",
-        scratch_folder=scratch_folder, output_gdb=output_gdb, num_workers=NUM_WORKERS
+        scratch_folder=scratch_folder, output_gdb=output_gdb, num_workers=NUM_WORKERS_VALIDATE
     )
     full_model_raster = model_raster_result.getOutput(0)
     if hasattr(model_raster_result, '_mp_stats'):
@@ -859,15 +966,14 @@ if __name__ == "__main__":
 
     arcpy.env.snapRaster = full_model_raster
 
+    # =========================================================================
+    # STEP 5: Tunnel rasterization + clip
+    # =========================================================================
     print("Creating tunnel mask...")
-    logging.info("Starting IFC import (tunnel)...")
     t_tunnel = time.time()
-    t0 = time.time()
-    tunnel_mps = import_ifcs_as_multipatch(tunnel_list, scratch_gdb, arcpy.env.outputCoordinateSystem)
-    logging.info("IFC import (tunnel) completed in %.1f seconds", time.time() - t0)
     tunnel_result = merge_and_rasterize_multipatches(
         tunnel_mps, CELL_SIZE, "MERGED_TUNNEL_RASTER",
-        scratch_folder=scratch_folder, output_gdb=output_gdb, num_workers=NUM_WORKERS
+        scratch_folder=scratch_folder, output_gdb=output_gdb, num_workers=NUM_WORKERS_VALIDATE
     )
     if tunnel_result is not None and hasattr(tunnel_result, '_mp_stats'):
         rasterize_stats["MERGED_TUNNEL_RASTER"] = tunnel_result._mp_stats
@@ -881,7 +987,6 @@ if __name__ == "__main__":
         merged_tunnel_mask = arcpy.Raster(MUNKEBOTN_MASK)
 
     print("Clipping model raster against tunnel mask...")
-
     model_raster_mem = arcpy.Raster(full_model_raster)
     clipped_models_mem = arcpy.ia.Apply(model_raster_mem,
                                         "Clip",
@@ -929,11 +1034,11 @@ if __name__ == "__main__":
 
     logging.info("Starting IFC import (berg)...")
     t0 = time.time()
-    berg_mps = import_ifcs_as_multipatch(berg_list, scratch_gdb, arcpy.env.outputCoordinateSystem)
+    berg_mps = import_ifcs_as_multipatch(berg_list, scratch_gdb, arcpy.env.outputCoordinateSystem, num_workers=NUM_WORKERS_IFC)
     logging.info("IFC import (berg) completed in %.1f seconds", time.time() - t0)
     berg_raster_result = merge_and_rasterize_multipatches(
         berg_mps, CELL_SIZE, "MERGED_BERG_RASTER",
-        scratch_folder=scratch_folder, output_gdb=output_gdb, num_workers=NUM_WORKERS
+        scratch_folder=scratch_folder, output_gdb=output_gdb, num_workers=NUM_WORKERS_VALIDATE
     )
     full_berg_raster = berg_raster_result.getOutput(0)
     if hasattr(berg_raster_result, '_mp_stats'):
@@ -970,7 +1075,7 @@ if __name__ == "__main__":
     print(f"Grid processing: {len(grid_extents)} tiles ({seq_str})")
     t0 = time.time()
 
-    if NUM_WORKERS > 1:
+    if NUM_WORKERS_GRID > 1:
         # =====================================================================
         # PARALLEL GRID PROCESSING
         # =====================================================================
@@ -989,19 +1094,27 @@ if __name__ == "__main__":
                 scratch_folder,
             ))
 
-        print(f"Phase A: clip + filter + berg excavation ({len(tile_args_a)} tiles, {NUM_WORKERS} workers)...")
-        with Pool(NUM_WORKERS, initializer=init_grid_worker, initargs=(25832, full_model_raster)) as pool:
+        print(f"Phase A: clip + filter + berg excavation ({len(tile_args_a)} tiles, {NUM_WORKERS_GRID} workers)...")
+        with Pool(NUM_WORKERS_GRID, initializer=init_grid_worker, initargs=(25832, full_model_raster)) as pool:
             phase_a_results = pool.map(process_tile_phase_a, tile_args_a)
 
         t_phase_a = time.time() - t0
         timings["grid_phase_a"] = t_phase_a
         tile_times_a = [r["elapsed_s"] for r in phase_a_results]
+        avg_a = sum(tile_times_a) / len(tile_times_a)
         logging.info("Phase A completed in %.1f seconds (%d tiles: min=%.1fs, max=%.1fs, avg=%.1fs)",
-                     t_phase_a, len(tile_times_a), min(tile_times_a), max(tile_times_a),
-                     sum(tile_times_a) / len(tile_times_a))
+                     t_phase_a, len(tile_times_a), min(tile_times_a), max(tile_times_a), avg_a)
+        # Log only outliers (>2x avg or slowest 5)
+        sorted_a = sorted(phase_a_results, key=lambda r: r["elapsed_s"], reverse=True)
+        outliers_a = [r for r in sorted_a if r["elapsed_s"] > 2 * avg_a]
+        if len(outliers_a) < 5:
+            outliers_a = sorted_a[:5]
+        for r in outliers_a:
+            logging.info("  Tile %s: %.1fs%s", r["grid_id"], r["elapsed_s"],
+                         " (SLOW)" if r["elapsed_s"] > 2 * avg_a else "")
         for r in phase_a_results:
-            logging.info("  Tile %s: %.1fs", r["grid_id"], r["elapsed_s"])
-        print(f"Phase A complete ({t_phase_a:.1f}s, tiles: min={min(tile_times_a):.1f}s max={max(tile_times_a):.1f}s avg={sum(tile_times_a)/len(tile_times_a):.1f}s)")
+            logging.debug("  Tile %s: %.1fs", r["grid_id"], r["elapsed_s"])
+        print(f"Phase A complete ({t_phase_a:.1f}s, {len(tile_times_a)} tiles: min={min(tile_times_a):.1f}s max={max(tile_times_a):.1f}s avg={avg_a:.1f}s)")
 
         # ----- Barrier: merge all berg excavation tiles + buffer -----
         t_barrier = time.time()
@@ -1038,19 +1151,27 @@ if __name__ == "__main__":
                 scratch_folder,
             ))
 
-        print(f"Phase B: buffer merge + model merge + terrain clip + final excavation ({len(tile_args_b)} tiles, {NUM_WORKERS} workers)...")
-        with Pool(NUM_WORKERS, initializer=init_grid_worker, initargs=(25832, full_model_raster)) as pool:
+        print(f"Phase B: buffer merge + model merge + terrain clip + final excavation ({len(tile_args_b)} tiles, {NUM_WORKERS_GRID} workers)...")
+        with Pool(NUM_WORKERS_GRID, initializer=init_grid_worker, initargs=(25832, full_model_raster)) as pool:
             phase_b_results = pool.map(process_tile_phase_b, tile_args_b)
 
         t_phase_b = time.time() - t0 - t_phase_a - timings["grid_barrier"]
         timings["grid_phase_b"] = t_phase_b
         tile_times_b = [r["elapsed_s"] for r in phase_b_results]
+        avg_b = sum(tile_times_b) / len(tile_times_b)
         logging.info("Phase B completed in %.1f seconds (%d tiles: min=%.1fs, max=%.1fs, avg=%.1fs)",
-                     t_phase_b, len(tile_times_b), min(tile_times_b), max(tile_times_b),
-                     sum(tile_times_b) / len(tile_times_b))
+                     t_phase_b, len(tile_times_b), min(tile_times_b), max(tile_times_b), avg_b)
+        # Log only outliers (>2x avg or slowest 5)
+        sorted_b = sorted(phase_b_results, key=lambda r: r["elapsed_s"], reverse=True)
+        outliers_b = [r for r in sorted_b if r["elapsed_s"] > 2 * avg_b]
+        if len(outliers_b) < 5:
+            outliers_b = sorted_b[:5]
+        for r in outliers_b:
+            logging.info("  Tile %s: %.1fs%s", r["grid_id"], r["elapsed_s"],
+                         " (SLOW)" if r["elapsed_s"] > 2 * avg_b else "")
         for r in phase_b_results:
-            logging.info("  Tile %s: %.1fs", r["grid_id"], r["elapsed_s"])
-        print(f"Phase B complete ({t_phase_b:.1f}s, tiles: min={min(tile_times_b):.1f}s max={max(tile_times_b):.1f}s avg={sum(tile_times_b)/len(tile_times_b):.1f}s)")
+            logging.debug("  Tile %s: %.1fs", r["grid_id"], r["elapsed_s"])
+        print(f"Phase B complete ({t_phase_b:.1f}s, {len(tile_times_b)} tiles: min={min(tile_times_b):.1f}s max={max(tile_times_b):.1f}s avg={avg_b:.1f}s)")
 
         # Collect results — separate lists for model tiles and excavation tiles
         final_model_tiles = [r["final_model"] for r in phase_b_results]
@@ -1266,6 +1387,26 @@ if __name__ == "__main__":
     logging.info("Volumes: berg=%.1f m3, sediment=%.1f m3, total_terrain=%.1f m3", berg_vol, sediment_vol, terrain_vol)
     print(f"Volumes: berg={berg_vol:.1f} m3, sediment={sediment_vol:.1f} m3")
 
+    # Baseline comparison warnings
+    BASELINE_BERG = 329_936
+    BASELINE_SEDIMENT = 2_045_014
+    berg_ratio = berg_vol / BASELINE_BERG if BASELINE_BERG > 0 else 0
+    sed_ratio = sediment_vol / BASELINE_SEDIMENT if BASELINE_SEDIMENT > 0 else 0
+    if berg_ratio > 2.0:
+        logging.warning("VOLUME DISCREPANCY: berg=%.0f m3 is %.1fx baseline (%.0f m3). "
+                        "Possible cause: unfiltered deep models or data changes.",
+                        berg_vol, berg_ratio, BASELINE_BERG)
+        print(f"  WARNING: Berg volume {berg_vol:,.0f} m3 is {berg_ratio:.1f}x the baseline ({BASELINE_BERG:,} m3)")
+    elif berg_ratio < 0.5:
+        logging.warning("VOLUME DISCREPANCY: berg=%.0f m3 is %.1fx baseline (%.0f m3). "
+                        "Possible cause: overcorrection from tunnel fix or missing input data.",
+                        berg_vol, berg_ratio, BASELINE_BERG)
+        print(f"  WARNING: Berg volume {berg_vol:,.0f} m3 is only {berg_ratio:.1f}x the baseline ({BASELINE_BERG:,} m3)")
+    if sed_ratio > 3.0 or sed_ratio < 0.3:
+        logging.warning("VOLUME DISCREPANCY: sediment=%.0f m3 is %.1fx baseline (%.0f m3).",
+                        sediment_vol, sed_ratio, BASELINE_SEDIMENT)
+        print(f"  WARNING: Sediment volume {sediment_vol:,.0f} m3 is {sed_ratio:.1f}x the baseline ({BASELINE_SEDIMENT:,} m3)")
+
     # =========================================================================
     # PIPELINE SUMMARY
     # =========================================================================
@@ -1274,12 +1415,14 @@ if __name__ == "__main__":
 
     summary_phases = [
         ("IFC import (model)",     timings.get("ifc_import_model", 0)),
+        ("IFC import (tunnel)",    timings.get("ifc_import_tunnel", 0)),
+        ("Deep model filter",      timings.get("deep_model_filter", 0)),
         ("Model rasterization",    timings.get("model_rasterization", 0)),
         ("Tunnel processing",      timings.get("tunnel_processing", 0)),
         ("Terrain conversion",     timings.get("terrain_conversion", 0)),
         ("Berg conversion",        timings.get("berg_conversion", 0)),
     ]
-    if NUM_WORKERS > 1:
+    if NUM_WORKERS_GRID > 1:
         summary_phases += [
             ("Grid: Phase A",          timings.get("grid_phase_a", 0)),
             ("Grid: Barrier",          timings.get("grid_barrier", 0)),
@@ -1309,7 +1452,7 @@ if __name__ == "__main__":
     summary_lines.append("=" * 70)
     summary_lines.append("PIPELINE SUMMARY")
     summary_lines.append("=" * 70)
-    summary_lines.append(f"  Mode: {mode_str}, {seq_str}, cell_size={CELL_SIZE}")
+    summary_lines.append(f"  Mode: {mode_str}, {seq_str}{filter_str}, cell_size={CELL_SIZE}")
     summary_lines.append(f"  Grid tiles: {len(grid_extents)}")
 
     # --- Input inventory ---
@@ -1371,14 +1514,14 @@ if __name__ == "__main__":
     summary_lines.append(f"  {'Terrain (total)':<28} {terrain_vol:>15,.1f}")
 
     # --- Tile stats ---
-    if NUM_WORKERS > 1:
+    if NUM_WORKERS_GRID > 1:
         summary_lines.append("-" * 70)
         summary_lines.append("  GRID TILE STATISTICS")
         summary_lines.append(f"  Phase A tiles: n={len(tile_times_a)}, min={min(tile_times_a):.1f}s, max={max(tile_times_a):.1f}s, avg={sum(tile_times_a)/len(tile_times_a):.1f}s, sum={sum(tile_times_a):.1f}s")
         summary_lines.append(f"  Phase B tiles: n={len(tile_times_b)}, min={min(tile_times_b):.1f}s, max={max(tile_times_b):.1f}s, avg={sum(tile_times_b)/len(tile_times_b):.1f}s, sum={sum(tile_times_b):.1f}s")
         speedup_a = sum(tile_times_a) / timings.get("grid_phase_a", 1)
         speedup_b = sum(tile_times_b) / timings.get("grid_phase_b", 1)
-        summary_lines.append(f"  Effective speedup: Phase A {speedup_a:.1f}x, Phase B {speedup_b:.1f}x (of {NUM_WORKERS} workers)")
+        summary_lines.append(f"  Effective speedup: Phase A {speedup_a:.1f}x, Phase B {speedup_b:.1f}x (of {NUM_WORKERS_GRID} workers)")
     summary_lines.append("=" * 70)
 
     summary_text = "\n".join(summary_lines)
