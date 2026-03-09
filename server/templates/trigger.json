@@ -30,11 +30,15 @@
     "                false (default) — apply filter, exclude deep underground models without tunnel",
     "                true            — skip filter, process ALL models (berg volume will be inflated)",
     "",
+    "fresh:          Clear IFC cache and reimport all files from source (v3 only).",
+    "                false (default) — use cached GDBs for unchanged IFC files",
+    "                true            — delete cache, reimport everything (slower but guarantees fresh data)",
+    "",
     "test:           Run in test mode (only 10 IFC files, for quick validation).",
     "                false (default) — full run (~35 min)",
     "                true            — test mode (~5 min)",
     "",
-    "Minimal trigger: {} — runs v3, moderate tier, no publish, filter on, full run.",
+    "Minimal trigger: {} — runs v3, moderate tier, no publish, filter on, cached, full run.",
     "To start a run, upload this file as 'trigger.json' in the pipeline_runs folder."
   ],
 
@@ -43,5 +47,6 @@
   "publish": false,
   "publish_target": "auto",
   "no_filter": false,
+  "fresh": false,
   "test": false
 }
