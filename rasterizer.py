@@ -104,25 +104,92 @@ def mesh_to_raster(
     return raster, transform
 
 
+def _estimate_ray_grid_bytes(meshes: list[trimesh.Trimesh], cell_size: float) -> int:
+    """Estimate memory needed for combined raycast (6 floats per ray * 4 bytes)."""
+    combined = trimesh.util.concatenate(meshes)
+    bounds = combined.bounds
+    nx = int((bounds[1, 0] - bounds[0, 0]) / cell_size) + 1
+    ny = int((bounds[1, 1] - bounds[0, 1]) / cell_size) + 1
+    # rays array (n_rays * 6 * 4) + origins + directions + result
+    return nx * ny * 6 * 4 * 3  # ~3x for working buffers
+
+
 def meshes_to_merged_raster(
     meshes: list[trimesh.Trimesh],
     cell_size: float,
     method: str = "MINIMUM_HEIGHT",
+    scratch_dir: str | None = None,
 ) -> tuple[np.ndarray, "rasterio.transform.Affine"]:
-    """Combine multiple meshes into one, then rasterize.
+    """Rasterize multiple meshes and merge.
 
-    Meshes are concatenated into a single trimesh before raycasting, which is
-    faster and ensures a single consistent grid.
+    For small combined bounding boxes, concatenates and raycasts in one pass.
+    For large ones (>8 GB ray grid), rasterizes each mesh individually and
+    merges via rasterio to avoid OOM.
     """
     if not meshes:
         raise ValueError("No meshes to rasterize")
 
-    combined = trimesh.util.concatenate(meshes)
+    # Estimate memory for combined approach
+    MAX_RAY_BYTES = 8 * 1024**3  # 8 GB threshold
+    try:
+        est_bytes = _estimate_ray_grid_bytes(meshes, cell_size)
+    except Exception:
+        est_bytes = MAX_RAY_BYTES + 1  # force safe path on error
+
+    if len(meshes) == 1 or est_bytes < MAX_RAY_BYTES:
+        # Fast path: combine and raycast in one pass
+        combined = trimesh.util.concatenate(meshes)
+        logger.info(
+            "Combined %d meshes → %d vertices, %d faces (est %.1f GB rays)",
+            len(meshes), len(combined.vertices), len(combined.faces),
+            est_bytes / 1024**3,
+        )
+        return mesh_to_raster(combined, cell_size, method)
+
+    # Memory-safe path: rasterize each mesh individually, merge via rasterio
     logger.info(
-        "Combined %d meshes → %d vertices, %d faces",
-        len(meshes), len(combined.vertices), len(combined.faces),
+        "Ray grid too large (%.1f GB) for %d meshes — rasterizing individually and merging",
+        est_bytes / 1024**3, len(meshes),
     )
-    return mesh_to_raster(combined, cell_size, method)
+    import tempfile
+    import gc
+    from rasterio.merge import merge as rasterio_merge
+
+    temp_dir = scratch_dir or tempfile.gettempdir()
+    temp_paths = []
+
+    for i, mesh in enumerate(meshes):
+        logger.info("  Rasterizing mesh %d/%d (%d verts)...", i + 1, len(meshes), len(mesh.vertices))
+        arr, tf = mesh_to_raster(mesh, cell_size, method)
+        tmp_path = os.path.join(temp_dir, f"_mesh_raster_{i}.tif")
+        write_geotiff(arr, tf, "EPSG:25832", tmp_path)
+        temp_paths.append(tmp_path)
+        del arr
+        gc.collect()
+
+    # Merge all individual rasters
+    logger.info("Merging %d individual rasters...", len(temp_paths))
+    datasets = [rasterio.open(p) for p in temp_paths]
+    try:
+        mosaic, mosaic_transform = rasterio_merge(datasets, method="min")
+    finally:
+        for ds in datasets:
+            ds.close()
+
+    # Clean up temp files
+    for p in temp_paths:
+        try:
+            os.remove(p)
+        except OSError:
+            pass
+
+    result = mosaic[0]  # merge returns (bands, rows, cols), take band 0
+    transform = rasterio.transform.Affine(
+        mosaic_transform.a, mosaic_transform.b, mosaic_transform.c,
+        mosaic_transform.d, mosaic_transform.e, mosaic_transform.f,
+    )
+    logger.info("Merged raster: %dx%d", result.shape[1], result.shape[0])
+    return result, transform
 
 
 # ── GeoTIFF I/O ──────────────────────────────────────────────────────────────

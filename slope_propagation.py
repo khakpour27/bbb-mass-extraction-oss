@@ -50,8 +50,8 @@ def _make_neighbours(cell_size: float) -> list[tuple[int, int, float]]:
 
 if HAS_NUMBA:
     @njit(cache=True)
-    def _rock_slope_numba(model_arr, berg_arr, cell_size, slope_factor):
-        """JIT-compiled BFS for rock slope propagation."""
+    def _rock_slope_numba(model_arr, berg_arr, tunnel_protected, cell_size, slope_factor):
+        """JIT-compiled BFS for rock slope propagation with tunnel protection."""
         rows, cols = model_arr.shape
         output = model_arr.copy()
         in_queue = np.zeros((rows, cols), dtype=numba.boolean)
@@ -89,6 +89,8 @@ if HAS_NUMBA:
                 nr = r + dr[k]
                 nc = c + dc[k]
                 if 0 <= nr < rows and 0 <= nc < cols:
+                    if tunnel_protected[nr, nc]:
+                        continue  # skip tunnel zone
                     berg_rise = dist[k] * slope_factor
                     tent_elev = current_elev + berg_rise
                     n_berg = berg_arr[nr, nc]
@@ -106,8 +108,8 @@ if HAS_NUMBA:
         return output
 
     @njit(cache=True)
-    def _soil_slope_numba(model_arr, berg_arr, terrain_arr, cell_size, slope_divisor):
-        """JIT-compiled BFS for soil slope propagation."""
+    def _soil_slope_numba(model_arr, berg_arr, terrain_arr, tunnel_protected, cell_size, slope_divisor):
+        """JIT-compiled BFS for soil slope propagation with tunnel protection."""
         rows, cols = model_arr.shape
         output = model_arr.copy()
         in_queue = np.zeros((rows, cols), dtype=numba.boolean)
@@ -143,6 +145,8 @@ if HAS_NUMBA:
                 nr = r + dr[k]
                 nc = c + dc[k]
                 if 0 <= nr < rows and 0 <= nc < cols:
+                    if tunnel_protected[nr, nc]:
+                        continue  # skip tunnel zone
                     rise = dist[k] / slope_divisor
                     tent_elev = current_elev + rise
                     n_current = output[nr, nc]
@@ -163,8 +167,8 @@ if HAS_NUMBA:
 
 # ── Pure-Python fallback implementations ─────────────────────────────────────
 
-def _rock_slope_python(model_arr, berg_arr, cell_size, slope_factor):
-    """Pure-Python BFS for rock slope propagation."""
+def _rock_slope_python(model_arr, berg_arr, tunnel_protected, cell_size, slope_factor):
+    """Pure-Python BFS for rock slope propagation with tunnel protection."""
     rows, cols = model_arr.shape
     output = np.copy(model_arr)
     in_queue = np.zeros(output.shape, dtype=bool)
@@ -184,6 +188,8 @@ def _rock_slope_python(model_arr, berg_arr, cell_size, slope_factor):
         for dr, dc, dist in neighbours:
             nr, nc = r + dr, c + dc
             if 0 <= nr < rows and 0 <= nc < cols:
+                if tunnel_protected[nr, nc]:
+                    continue  # skip tunnel zone
                 berg_rise = dist * slope_factor
                 tent_elev = current_elev + berg_rise
                 n_berg = berg_arr[nr, nc]
@@ -202,8 +208,8 @@ def _rock_slope_python(model_arr, berg_arr, cell_size, slope_factor):
     return output
 
 
-def _soil_slope_python(model_arr, berg_arr, terrain_arr, cell_size, slope_divisor):
-    """Pure-Python BFS for soil slope propagation."""
+def _soil_slope_python(model_arr, berg_arr, terrain_arr, tunnel_protected, cell_size, slope_divisor):
+    """Pure-Python BFS for soil slope propagation with tunnel protection."""
     rows, cols = model_arr.shape
     output = np.copy(model_arr)
     in_queue = np.zeros(output.shape, dtype=bool)
@@ -223,6 +229,8 @@ def _soil_slope_python(model_arr, berg_arr, terrain_arr, cell_size, slope_diviso
         for dr, dc, dist in neighbours:
             nr, nc = r + dr, c + dc
             if 0 <= nr < rows and 0 <= nc < cols:
+                if tunnel_protected[nr, nc]:
+                    continue  # skip tunnel zone
                 rise = dist / slope_divisor
                 tent_elev = current_elev + rise
                 n_current = output[nr, nc]
@@ -244,11 +252,24 @@ def _soil_slope_python(model_arr, berg_arr, terrain_arr, cell_size, slope_diviso
 
 # ── Public API (auto-selects numba or Python) ────────────────────────────────
 
+def _build_tunnel_protection(tunnel_mask: np.ndarray | None, rows: int, cols: int) -> np.ndarray:
+    """Build boolean tunnel protection array, handling shape mismatches."""
+    if tunnel_mask is None:
+        return np.zeros((rows, cols), dtype=np.bool_)
+    # Tunnel mask may differ slightly in shape from model — clip to match
+    tr = min(tunnel_mask.shape[0], rows)
+    tc = min(tunnel_mask.shape[1], cols)
+    protected = np.zeros((rows, cols), dtype=np.bool_)
+    protected[:tr, :tc] = ~np.isnan(tunnel_mask[:tr, :tc])
+    return protected
+
+
 def propagate_rock_slope(
     model_arr: np.ndarray,
     berg_arr: np.ndarray,
     cell_size: float = CELL_SIZE,
     slope_factor: float = ROCK_SLOPE_FACTOR,
+    tunnel_mask: np.ndarray | None = None,
 ) -> np.ndarray:
     """BFS slope propagation for rock excavation (10:1 slope).
 
@@ -256,17 +277,29 @@ def propagate_rock_slope(
     excavation elevation outward through rock, rising by
     ``distance * slope_factor`` per cell step.
 
+    Parameters
+    ----------
+    tunnel_mask : optional float array where non-NaN = tunnel zone (BFS blocked).
+        Prevents excavation from flooding into areas above tunnels.
+
     Uses numba JIT if available, otherwise falls back to pure Python.
     """
+    rows, cols = model_arr.shape
+    tunnel_protected = _build_tunnel_protection(tunnel_mask, rows, cols)
+    n_protected = int(tunnel_protected.sum())
+    if n_protected > 0:
+        logger.info("Tunnel protection mask: %d cells blocked from rock BFS", n_protected)
+
     if HAS_NUMBA:
         result = _rock_slope_numba(
             model_arr.astype(np.float64),
             berg_arr.astype(np.float64),
+            tunnel_protected,
             float(cell_size),
             float(slope_factor),
         )
     else:
-        result = _rock_slope_python(model_arr, berg_arr, cell_size, slope_factor)
+        result = _rock_slope_python(model_arr, berg_arr, tunnel_protected, cell_size, slope_factor)
 
     logger.info("Rock slope propagation complete (%d×%d)", model_arr.shape[0], model_arr.shape[1])
     return result.astype(np.float32)
@@ -278,6 +311,7 @@ def propagate_soil_slope(
     terrain_arr: np.ndarray,
     cell_size: float = CELL_SIZE,
     slope_divisor: float = SOIL_SLOPE_DIVISOR,
+    tunnel_mask: np.ndarray | None = None,
 ) -> np.ndarray:
     """BFS slope propagation for soil/loam excavation (1:1.5 slope).
 
@@ -285,18 +319,30 @@ def propagate_soil_slope(
     ``distance / slope_divisor`` per cell step, constrained by the terrain
     surface elevation.
 
+    Parameters
+    ----------
+    tunnel_mask : optional float array where non-NaN = tunnel zone (BFS blocked).
+        Prevents excavation from flooding into areas above tunnels.
+
     Uses numba JIT if available, otherwise falls back to pure Python.
     """
+    rows, cols = model_arr.shape
+    tunnel_protected = _build_tunnel_protection(tunnel_mask, rows, cols)
+    n_protected = int(tunnel_protected.sum())
+    if n_protected > 0:
+        logger.info("Tunnel protection mask: %d cells blocked from soil BFS", n_protected)
+
     if HAS_NUMBA:
         result = _soil_slope_numba(
             model_arr.astype(np.float64),
             berg_arr.astype(np.float64),
             terrain_arr.astype(np.float64),
+            tunnel_protected,
             float(cell_size),
             float(slope_divisor),
         )
     else:
-        result = _soil_slope_python(model_arr, berg_arr, terrain_arr, cell_size, slope_divisor)
+        result = _soil_slope_python(model_arr, berg_arr, terrain_arr, tunnel_protected, cell_size, slope_divisor)
 
     logger.info("Soil slope propagation complete (%d×%d)", model_arr.shape[0], model_arr.shape[1])
     return result.astype(np.float32)

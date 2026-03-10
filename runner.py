@@ -127,7 +127,7 @@ def safe_delete(path: str, retries: int = 3) -> None:
 def _process_rock_tile(args):
     """Process a single tile for rock slope BFS (Pass 1). Designed for ProcessPoolExecutor."""
     (tile_id, tile_bounds, model_raster_path, berg_raster_path,
-     cell_size, slope_factor, crs, scratch_folder) = args
+     tunnel_raster_path, cell_size, slope_factor, crs, scratch_folder) = args
 
     model_clip, model_clip_tf = clip_raster_to_bounds(model_raster_path, tile_bounds)
     berg_clip, berg_clip_tf = clip_raster_to_bounds(berg_raster_path, tile_bounds)
@@ -141,8 +141,14 @@ def _process_rock_tile(args):
     if not validate_tile_dimensions(berg_clip):
         berg_clip = np.full_like(berg_clip, np.nan)
 
+    # Clip tunnel mask for this tile (None if no tunnel data)
+    tunnel_clip = None
+    if tunnel_raster_path:
+        tunnel_clip, _ = clip_raster_to_bounds(tunnel_raster_path, tile_bounds)
+
     filtered = filter_model_under_berg(model_clip, berg_clip)
-    berg_exc = propagate_rock_slope(filtered, berg_clip, cell_size, slope_factor)
+    berg_exc = propagate_rock_slope(filtered, berg_clip, cell_size, slope_factor,
+                                    tunnel_mask=tunnel_clip)
 
     berg_exc_path = os.path.join(scratch_folder, f"berg_exc_tile_{tile_id}.tif")
     write_geotiff(berg_exc, model_clip_tf, crs, berg_exc_path)
@@ -164,7 +170,7 @@ def _process_soil_tile(args):
     """
     (tile_id, tile_bounds, model_raster_path, berg_raster_path,
      complete_berg_exc_path, terrain_raster_path,
-     buffer_zone_path,
+     buffer_zone_path, tunnel_raster_path,
      cell_size, soil_slope_divisor, crs, scratch_folder) = args
 
     model_clip, model_clip_tf = clip_raster_to_bounds(model_raster_path, tile_bounds)
@@ -187,10 +193,20 @@ def _process_soil_tile(args):
     if buf_clip is None:
         buf_clip = np.full_like(model_clip, np.nan)
 
+    # Clip tunnel mask for this tile (None if no tunnel data)
+    tunnel_clip = None
+    if tunnel_raster_path:
+        tunnel_clip, _ = clip_raster_to_bounds(tunnel_raster_path, tile_bounds)
+
     buff_berg = merge_buffer_with_berg(berg_clip, berg_exc_clip, buf_clip, cell_size)
     merged_model = merge_berg_with_models(buff_berg, model_clip)
 
-    final_exc = propagate_soil_slope(merged_model, berg_exc_clip, terrain_clip, cell_size)
+    # Use buff_berg as the blocking mask for soil BFS — matches legacy behavior.
+    # Legacy passes merge_buffer_with_berg result (berg_exc + buffer zone filled with
+    # berg surface), NOT raw berg_exc. This prevents soil BFS from expanding into the
+    # buffer zone around rock excavation.
+    final_exc = propagate_soil_slope(merged_model, buff_berg, terrain_clip, cell_size,
+                                     tunnel_mask=tunnel_clip)
 
     final_exc_path = os.path.join(scratch_folder, f"final_tile_{tile_id}.tif")
     write_geotiff(final_exc, model_clip_tf, crs, final_exc_path)
@@ -372,7 +388,7 @@ def run(
               len(all_model_meshes), cfg["CELL_SIZE"])
     t_raster = time.time()
     model_raster_arr, model_transform = meshes_to_merged_raster(
-        all_model_meshes, cfg["CELL_SIZE"], "MINIMUM_HEIGHT"
+        all_model_meshes, cfg["CELL_SIZE"], "MINIMUM_HEIGHT", scratch_dir=scratch_folder
     )
     model_raster_path = os.path.join(scratch_folder, "MERGED_MODEL_RASTER.tif")
     write_geotiff(model_raster_arr, model_transform, cfg["CRS"], model_raster_path)
@@ -407,7 +423,7 @@ def run(
         _step_log("Rasterizing %d tunnel meshes...", len(tunnel_meshes))
         t_raster = time.time()
         tunnel_arr, tunnel_tf = meshes_to_merged_raster(
-            tunnel_meshes, cfg["CELL_SIZE"], "MINIMUM_HEIGHT"
+            tunnel_meshes, cfg["CELL_SIZE"], "MINIMUM_HEIGHT", scratch_dir=scratch_folder
         )
         tunnel_raster_path = os.path.join(scratch_folder, "MERGED_TUNNEL_RASTER.tif")
         write_geotiff(tunnel_arr, tunnel_tf, cfg["CRS"], tunnel_raster_path)
@@ -495,7 +511,7 @@ def run(
     _progress("Rasterizing berg meshes", 50)
     _step_log("Rasterizing %d berg meshes...", len(berg_meshes))
     t_raster = time.time()
-    berg_arr, berg_tf = meshes_to_merged_raster(berg_meshes, cfg["CELL_SIZE"], "MINIMUM_HEIGHT")
+    berg_arr, berg_tf = meshes_to_merged_raster(berg_meshes, cfg["CELL_SIZE"], "MINIMUM_HEIGHT", scratch_dir=scratch_folder)
     berg_tf = snap_transform(berg_tf, ref_transform, cfg["CELL_SIZE"])
     berg_raster_path = os.path.join(scratch_folder, "MERGED_BERG_RASTER.tif")
     write_geotiff(berg_arr, berg_tf, cfg["CRS"], berg_raster_path)
@@ -556,6 +572,7 @@ def run(
             tile_id = tile_row.get("GRIDNR", idx)
             tile_args.append((
                 tile_id, tile_bounds, model_raster_path, berg_raster_path,
+                tunnel_raster_path,
                 cfg["CELL_SIZE"], cfg.get("ROCK_SLOPE_FACTOR", 10.0),
                 cfg["CRS"], scratch_folder,
             ))
@@ -601,13 +618,19 @@ def run(
                           tile_id, berg_clip.shape[1], berg_clip.shape[0])
                 berg_clip = np.full_like(berg_clip, np.nan)
 
+            # Clip tunnel mask for this tile
+            tunnel_clip = None
+            if tunnel_raster_path:
+                tunnel_clip, _ = clip_raster_to_bounds(tunnel_raster_path, tile_bounds)
+
             filtered = filter_model_under_berg(model_clip, berg_clip)
             valid_before = int(np.count_nonzero(~np.isnan(model_clip)))
             valid_after = int(np.count_nonzero(~np.isnan(filtered)))
             _step_log("Tile %s: filtered model cells %d → %d (under berg)", tile_id, valid_before, valid_after)
 
             _step_log("Tile %s: running rock slope BFS (factor=%.1f)...", tile_id, cfg.get("ROCK_SLOPE_FACTOR", 10.0))
-            berg_exc = propagate_rock_slope(filtered, berg_clip, cfg["CELL_SIZE"])
+            berg_exc = propagate_rock_slope(filtered, berg_clip, cfg["CELL_SIZE"],
+                                            tunnel_mask=tunnel_clip)
 
             berg_exc_path = os.path.join(scratch_folder, f"berg_exc_tile_{tile_id}.tif")
             write_geotiff(berg_exc, model_clip_tf, cfg["CRS"], berg_exc_path)
@@ -685,7 +708,7 @@ def run(
                     td["tile_id"], td["bounds"],
                     model_raster_path, berg_raster_path,
                     complete_berg_exc_path, terrain_raster_path,
-                    buffer_zone_path,
+                    buffer_zone_path, tunnel_raster_path,
                     cfg["CELL_SIZE"], cfg.get("SOIL_SLOPE_DIVISOR", 1.5),
                     cfg["CRS"], scratch_folder,
                 ))
@@ -719,6 +742,11 @@ def run(
                 terrain_clip, _ = clip_raster_to_bounds(terrain_raster_path, tile_bounds)
                 buf_clip, _ = clip_raster_to_bounds(buffer_zone_path, tile_bounds)
 
+                # Clip tunnel mask for this tile
+                tunnel_clip = None
+                if tunnel_raster_path:
+                    tunnel_clip, _ = clip_raster_to_bounds(tunnel_raster_path, tile_bounds)
+
                 # Skip tiles with no model data or no terrain
                 if model_clip is None or terrain_clip is None:
                     _step_log("Tile %s: no overlap with rasters — skipping", tile_id)
@@ -735,15 +763,18 @@ def run(
 
                 _step_log("Tile %s: running soil slope BFS (divisor=%.1f)...",
                           tile_id, cfg.get("SOIL_SLOPE_DIVISOR", 1.5))
+                # Use buff_berg as blocking mask — matches legacy behavior.
+                # Legacy passes merge_buffer_with_berg result, not raw berg_exc.
                 final_exc = propagate_soil_slope(
-                    merged_model, berg_exc_clip, terrain_clip, cfg["CELL_SIZE"]
+                    merged_model, buff_berg, terrain_clip, cfg["CELL_SIZE"],
+                    tunnel_mask=tunnel_clip
                 )
 
                 final_exc_path = os.path.join(scratch_folder, f"final_tile_{tile_id}.tif")
                 write_geotiff(final_exc, model_clip_tf, cfg["CRS"], final_exc_path)
 
                 # Explicit cleanup to prevent memory accumulation over 141 tiles
-                del model_clip, berg_clip, berg_exc_clip, terrain_clip, buf_clip
+                del model_clip, berg_clip, berg_exc_clip, terrain_clip, buf_clip, tunnel_clip
                 del buff_berg, merged_model, final_exc
                 if idx % 20 == 0:
                     gc.collect()

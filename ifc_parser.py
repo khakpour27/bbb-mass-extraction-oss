@@ -83,14 +83,34 @@ def validate_mesh_extent(
 
 # ── IFC → trimesh ────────────────────────────────────────────────────────────
 
+# IFC element types to EXCLUDE from model rasterization.
+# These are either non-physical (alignment centerlines, spaces, annotations)
+# or void geometry (openings) that arcpy's BIMFileToGeodatabase also excludes.
+# Including them creates false low-elevation data in MINIMUM_HEIGHT rasterization,
+# which inflates excavation volumes.
+IFC_EXCLUDE_TYPES = [
+    "IfcOpeningElement",      # Door/window void boxes — separate from host wall geometry
+    "IfcSpace",               # Room bounding volumes — invisible floor-to-ceiling boxes
+    "IfcAnnotation",          # 2D/3D annotations at arbitrary Z values
+    "IfcAlignment",           # Road centerline geometry (IFC4.3) — not a physical surface
+    "IfcAlignmentSegment",    # Alignment sub-elements (IFC4.3) — not a physical surface
+]
+
+
 def parse_ifc(ifc_path: str) -> list[trimesh.Trimesh]:
-    """Parse an IFC file and return a list of trimesh meshes for all elements."""
+    """Parse an IFC file and return a list of trimesh meshes for physical elements.
+
+    Excludes non-physical element types (openings, spaces, alignments, annotations)
+    to match arcpy BIMFileToGeodatabase behavior.
+    """
     ifc_file = ifcopenshell.open(ifc_path)
     settings = ifcopenshell.geom.settings()
     settings.set(settings.USE_WORLD_COORDS, True)
 
     meshes: list[trimesh.Trimesh] = []
-    iterator = ifcopenshell.geom.iterator(settings, ifc_file)
+    iterator = ifcopenshell.geom.iterator(
+        settings, ifc_file, exclude=IFC_EXCLUDE_TYPES
+    )
 
     if not iterator.initialize():
         logger.warning("No geometry found in %s", ifc_path)
